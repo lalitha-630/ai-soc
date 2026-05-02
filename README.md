@@ -17,3 +17,6 @@ Python, Streamlit, FAISS, Sentence-Transformers, Groq LLM
 
 pip install -r requirements.txt
 streamlit run app.py
+
+ Access and test it here
+ https://ai-soc.streamlit.app/

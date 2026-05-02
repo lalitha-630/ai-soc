@@ -1,20 +1,42 @@
 import os
 from groq import Groq
-from dotenv import load_dotenv
 
-load_dotenv()
+# Try loading .env locally (won’t break in cloud if not present)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except:
+    pass
 
+# -------------------------------
+# Load API Key (LOCAL + CLOUD)
+# -------------------------------
 api_key = os.getenv("GROQ_API_KEY")
-if not api_key:
-    raise ValueError("GROQ_API_KEY not found in .env")
 
+# If not found, try Streamlit secrets
+if not api_key:
+    try:
+        import streamlit as st
+        api_key = st.secrets.get("GROQ_API_KEY")
+    except:
+        pass
+
+if not api_key:
+    raise ValueError("GROQ_API_KEY not found. Set it in .env (local) or Streamlit Secrets (cloud).")
+
+# -------------------------------
+# Initialize client
+# -------------------------------
 client = Groq(api_key=api_key)
 
 
+# -------------------------------
+# LLM Function
+# -------------------------------
 def explain_answer(query: str, base_answer: str) -> str:
     try:
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",  # ✅ correct model
+            model="llama-3.1-8b-instant",
             temperature=0.4,
             max_tokens=300,
             messages=[

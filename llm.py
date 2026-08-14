@@ -36,7 +36,7 @@ client = Groq(api_key=api_key)
 def explain_answer(query: str, base_answer: str) -> str:
     try:
         response = client.chat.completions.create(
-            model="openai/gpt-oss-20b"
+            model="openai/gpt-oss-20b",
             temperature=0.4,
             max_tokens=300,
             messages=[

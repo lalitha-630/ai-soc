@@ -38,7 +38,7 @@ def explain_answer(query: str, base_answer: str) -> str:
         response = client.chat.completions.create(
             model="openai/gpt-oss-20b",
             temperature=0.4,
-            max_tokens=300,
+            max_tokens=500,
             messages=[
                 {
                     "role": "system",

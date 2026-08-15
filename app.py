@@ -91,4 +91,4 @@ Question:
                 answer = explain_answer(final_query, "Answer based on document")
 
             st.subheader("📄 Answer")
-            st.success(answer)
+            st.write(answer)

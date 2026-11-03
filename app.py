@@ -93,4 +93,3 @@ Question:
             st.subheader("📄 Answer")
             st.write(answer)
 
-this is app.py jjust add code line to it like ,etvx is uploaded the code itself converts .evtx to pdf so no need to change remaining code in app.py

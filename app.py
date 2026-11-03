@@ -363,7 +363,10 @@ if st.session_state.page == "Dashboard":
             st.dataframe(flow_frame, use_container_width=True, hide_index=True)
 # ML Findings
 elif st.session_state.page == "ML Findings":
-    st.title("ML Findings")
+    st.markdown(
+        "<h1 style='font-size:36px!important; line-height:1.2; margin:0 0 18px;'>ML Findings</h1>",
+        unsafe_allow_html=True,
+    )
     if not st.session_state.pcap_analyzed:
         st.info("Analyze a PCAP from Dashboard first.")
     else:
@@ -378,13 +381,6 @@ elif st.session_state.page == "ML Findings":
                 file_name="ai_soc_ml_findings.pdf", mime="application/pdf", type="primary")
         else:
             st.warning("No flow predictions available.")
-        st.subheader("Traffic Summary")
-        st.write(st.session_state.protocol_counts)
-        with st.expander("Extracted flow features"):
-            st.dataframe(pd.DataFrame(st.session_state.flow_rows), use_container_width=True)
-        with st.expander("Model input features"):
-            if st.session_state.model_input is not None:
-                st.dataframe(st.session_state.model_input, use_container_width=True)
 
 
 # AI Analyst

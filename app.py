@@ -15,12 +15,71 @@ st.set_page_config(page_title="AI-SOC Threat Analyzer", page_icon="🛡️", lay
 
 st.markdown("""
 <style>
-.stApp{background:#0b1220;color:#e5e7eb}
-[data-testid="stSidebar"]{background:#111c30;border-right:1px solid #263750}
-[data-testid="stSidebar"] *{color:#e5e7eb}
-h1,h2,h3{color:#f8fafc}
-.stButton>button,.stDownloadButton>button{width:100%;background:#1e3a5f;color:white;border:1px solid #345477;border-radius:8px}
-[data-testid="stMetric"]{background:#17243a;border:1px solid #263750;padding:14px;border-radius:12px}
+/* Base theme and readable contrast */
+.stApp { background:#0b1220; color:#e8eef8; font-size:18px; }
+[data-testid="stSidebar"] { background:#111c30; border-right:1px solid #263750; }
+[data-testid="stSidebar"] * { color:#e8eef8; }
+h1 { color:#f8fafc; font-size:2.15rem !important; }
+h2 { color:#f8fafc; font-size:1.65rem !important; }
+h3 { color:#eaf2ff; font-size:1.3rem !important; }
+p, label, [data-testid="stMarkdownContainer"] { font-size:18px; }
+
+/* Section titles: larger, italic, and visually distinct */
+h2, h3 { font-style:italic; }
+[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlockBorderWrapper"] {
+    margin-bottom:20px;
+}
+
+/* Navigation buttons */
+[data-testid="stSidebar"] .stButton > button {
+    width:100%; min-height:46px; text-align:left; font-size:18px;
+    font-weight:600; border-radius:9px; padding:8px 12px;
+    background:#1b3555; color:#f5f9ff; border:1px solid #345477;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+    background:#174b79; border-color:#22d3ee; color:#ffffff;
+}
+
+/* Main action and download buttons */
+.stButton > button, .stDownloadButton > button {
+    min-height:44px; font-size:18px; font-weight:600;
+    background:linear-gradient(100deg,#06b6d4,#2563eb,#7c3aed);
+    color:#ffffff; border:0; border-radius:9px;
+}
+.stButton > button:hover, .stDownloadButton > button:hover {
+    color:#ffffff; border:1px solid #67e8f9;
+}
+
+/* Metrics and content cards */
+[data-testid="stMetric"] {
+    background:#17243a; border:1px solid #263750;
+    padding:18px; border-radius:12px; margin-bottom:20px;
+}
+[data-testid="stMetricLabel"] { color:#b7c8df !important; font-size:16px !important; }
+[data-testid="stMetricValue"] { color:#22d3ee !important; font-size:32px !important; }
+
+/* Inputs: keep text dark on Streamlit's light input surfaces */
+[data-testid="stFileUploader"] section,
+[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {
+    background:#f3f6fb !important; color:#172033 !important;
+    border-radius:9px;
+}
+[data-testid="stFileUploader"] section *,
+[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] * {
+    color:#172033 !important;
+}
+.stTextInput input, .stTextArea textarea, .stSelectbox [data-baseweb="select"] {
+    background:#f3f6fb !important; color:#172033 !important;
+    font-size:17px !important; border-radius:8px;
+}
+.stTextInput label, .stTextArea label, .stSelectbox label {
+    color:#dbeafe !important; font-size:17px !important;
+}
+
+/* Tables and expanders */
+[data-testid="stDataFrame"] { border:1px solid #263750; border-radius:8px; }
+[data-testid="stExpander"] { border:1px solid #263750; border-radius:9px; margin-bottom:20px; }
+[data-testid="stExpander"] summary { font-size:18px; font-weight:600; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -43,8 +102,17 @@ with st.sidebar:
     st.title("🛡️ AI-SOC")
     st.caption("THREAT ANALYZER")
     st.divider()
+    nav_labels = {
+        "Dashboard": "📊  Dashboard",
+        "ML Findings": "🧠  ML Findings",
+        "AI Analyst": "🤖  AI Analyst",
+        "Statistics": "📈  Statistics",
+        "View PCAP File": "📄  View PCAP File",
+        "Flows": "🔀  Flows",
+        "About": "ℹ️  About",
+    }
     for page in PAGES:
-        if st.button(page, key=f"nav_{page}", type="primary" if st.session_state.page == page else "secondary"):
+        if st.button(nav_labels[page], key=f"nav_{page}", type="primary" if st.session_state.page == page else "secondary"):
             st.session_state.page = page
             st.rerun()
 

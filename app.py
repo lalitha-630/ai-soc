@@ -537,19 +537,57 @@ elif st.session_state.page == "RAG investigation":
 
 elif st.session_state.page == "About":
     st.title("About AI-SOC Threat Analyzer")
-    st.write(
-        """
-        AI-SOC Threat Analyzer is a prototype for reviewing network traffic
-        captured in PCAP or PCAPNG files.
+    st.caption("Project overview, dataset, ML model, and RAG workflow")
 
-        **Main capabilities**
-        - Extract packet and flow-level information.
-        - Run an ML model against extracted flow features.
-        - Generate a SOC-style investigation using the available traffic
-          context and ML findings.
+    st.subheader("Main features")
+    st.markdown("""
+    - Upload PCAP/PCAPNG files for network traffic analysis.
+    - Extract packet details and aggregate traffic into flows.
+    - Use a trained ML model to classify network flows.
+    - Ask investigation questions and receive SOC-style explanations.
+    - Review traffic summaries, flow features, and model predictions.
+    """)
 
-        **Important:** ML results are experimental. Validate the feature
-        extraction and preprocessing against the model's training data before
-        relying on predictions for security decisions.
-        """
-    )
+    st.subheader("Dataset")
+    st.markdown("""
+    The ML model was trained using a labeled network-traffic dataset.
+
+    - **Dataset name:** [Enter dataset name]
+    - **Source:** [Enter dataset source or URL]
+    - **Rows/records:** [Enter number of rows]
+    - **Features:** [Enter number of input features]
+    - **Label column:** [Enter target/label column]
+    - **Labels/classes:** [Enter the classes, e.g. normal and attack categories]
+
+    The label column provides the target class used during model training.
+    The remaining selected columns are used as input features.
+    """)
+
+    st.subheader("Machine learning model")
+    st.markdown("""
+    **Random Forest Classifier**
+
+    Random Forest is an ensemble model that combines predictions from multiple
+    decision trees. It can learn patterns across the dataset’s traffic features
+    and classify a flow into one of the trained labels.
+
+    In this application, the saved model is loaded from Google Drive and applied
+    to features extracted from the uploaded PCAP. The extracted feature names
+    and preprocessing must match the training pipeline for predictions to be reliable.
+    """)
+
+    st.subheader("RAG implementation")
+    st.markdown("""
+    The Retrieval-Augmented Generation (RAG) component supports natural-language
+    investigation of the traffic analysis.
+
+    1. The application prepares context from the PCAP summary and available ML findings.
+    2. The RAG pipeline retrieves relevant information from its indexed knowledge
+       sources using embeddings and FAISS similarity search.
+    3. The retrieved information and investigation question are sent to the
+       Groq-hosted language model.
+    4. The model generates a SOC-style explanation grounded in the supplied context.
+
+    RAG provides explanations and investigation support; it does not independently
+    verify that an event is malicious.
+    """)

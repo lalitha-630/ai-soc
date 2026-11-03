@@ -38,9 +38,9 @@ def explain_answer(query: str, base_answer: str) -> str:
                     "content": (
                         "You are a SOC analyst assisting with network traffic "
                         "triage. Use only the supplied packet evidence. "
-                        "Do not claim that an attack is confirmed unless the "
-                        "evidence supports it. Clearly distinguish observations "
-                        "from hypotheses. If evidence is insufficient, say so."
+                        "Do not claim an attack is confirmed unless the evidence "
+                        "supports it. Distinguish observations from hypotheses. "
+                        "If evidence is insufficient, say so."
                     ),
                 },
                 {
@@ -53,9 +53,9 @@ PCAP evidence:
 {base_answer}
 
 Provide:
-1. Summary of the observed traffic
+1. Summary of observed traffic
 2. Potential security concern or attack type, if supported
-3. Risk level (Low, Medium, High, or Inconclusive) with a brief reason
+3. Risk level (Low, Medium, High, or Inconclusive) and reason
 4. Recommended investigation or response steps
 
 Keep the answer clear and concise.
@@ -75,5 +75,4 @@ Keep the answer clear and concise.
         return content.strip()
 
     except Exception as exc:
-        # Return a readable error so the app can display it.
         return f"LLM_ERROR: {type(exc).__name__}: {exc}"

@@ -1,11 +1,16 @@
 import io
-from collections import Counter
+import os
+from collections import Counter, defaultdict
 
+import joblib
+import pandas as pd
 import streamlit as st
 from scapy.all import PcapReader, IP, IPv6, TCP, UDP, DNS, DNSQR
 
 from llm import explain_answer
 
+
+# -------------------- Page setup --------------------
 
 st.set_page_config(
     page_title="AI-SOC Threat Analyzer",
@@ -13,20 +18,68 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("AI-SOC Threat Analyzer")
-st.write(
-    "Upload a PCAP file to summarize packet-level network activity "
-    "and request a SOC-style explanation."
-)
+st.title("🛡️ AI-SOC Threat Analyzer")
+st.caption("PCAP traffic analysis • ML-based detection • SOC-style explanation")
 
-# Keep the LLM request small enough to avoid Groq token-limit errors.
 MAX_PACKETS_TO_READ = 10000
 MAX_PACKET_LINES_FOR_LLM = 30
 MAX_CONTEXT_CHARS_FOR_LLM = 5000
+MODEL_PATH = "model.joblib"
+
+
+# -------------------- Load ML model --------------------
+
+@st.cache_resource
+def load_model(path):
+    """Load either a saved sklearn pipeline or a bundle containing one."""
+    loaded = joblib.load(path)
+
+    if isinstance(loaded, dict):
+        model = loaded.get("pipeline") or loaded.get("model")
+        feature_columns = loaded.get("feature_columns")
+        label_map = loaded.get("label_map", {})
+    else:
+        model = loaded
+        feature_columns = getattr(model, "feature_names_in_", None)
+        label_map = {}
+
+    if model is None:
+        raise ValueError(
+            "model.joblib must contain a model, or a dictionary with "
+            "'pipeline' or 'model'."
+        )
+
+    if feature_columns is None:
+        feature_columns = getattr(model, "feature_names_in_", None)
+
+    if feature_columns is None:
+        raise ValueError(
+            "Could not find the model's feature columns. Save them in the "
+            "joblib bundle as 'feature_columns'."
+        )
+
+    return model, list(feature_columns), label_map
+
+
+# -------------------- PCAP feature extraction --------------------
+
+def packet_ip_pair(packet):
+    if IP in packet:
+        return packet[IP].src, packet[IP].dst, packet[IP].ttl, packet[IP].ttl
+    if IPv6 in packet:
+        return packet[IPv6].src, packet[IPv6].dst, 0, 0
+    return None
 
 
 def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
-    """Extract packet metadata and return a summary plus packet lines."""
+    """
+    Build bidirectional flow records and packet context.
+
+    Features that cannot be derived from this PCAP extractor are left at
+    zero when preparing model input. Treat resulting predictions as
+    experimental unless the model was trained on this same feature set.
+    """
+    flows = {}
     packet_lines = []
     protocol_counts = Counter()
     packet_count = 0
@@ -37,44 +90,109 @@ def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
         with PcapReader(file_bytes) as reader:
             for packet in reader:
                 packet_count += 1
-
                 if packet_count > max_packets:
                     break
 
-                src_ip = "Unknown"
-                dst_ip = "Unknown"
+                pair = packet_ip_pair(packet)
+                if not pair:
+                    continue
 
-                if IP in packet:
-                    src_ip = packet[IP].src
-                    dst_ip = packet[IP].dst
-                elif IPv6 in packet:
-                    src_ip = packet[IPv6].src
-                    dst_ip = packet[IPv6].dst
+                src_ip, dst_ip, src_ttl, dst_ttl = pair
+                timestamp = float(packet.time)
+                packet_size = len(packet)
 
-                protocol = "Other"
-                src_port = "-"
-                dst_port = "-"
-                tcp_flags = "-"
+                protocol = "OTHER"
+                src_port = 0
+                dst_port = 0
+                tcp_flags = ""
+                tcp_seq = 0
+                tcp_window = 0
 
                 if TCP in packet:
                     protocol = "TCP"
-                    src_port = packet[TCP].sport
-                    dst_port = packet[TCP].dport
+                    src_port = int(packet[TCP].sport)
+                    dst_port = int(packet[TCP].dport)
                     tcp_flags = str(packet[TCP].flags)
+                    tcp_seq = int(packet[TCP].seq)
+                    tcp_window = int(packet[TCP].window)
                 elif UDP in packet:
                     protocol = "UDP"
-                    src_port = packet[UDP].sport
-                    dst_port = packet[UDP].dport
+                    src_port = int(packet[UDP].sport)
+                    dst_port = int(packet[UDP].dport)
 
                 protocol_counts[protocol] += 1
 
+                # Canonical key groups both directions into one flow.
+                endpoint_a = (src_ip, src_port)
+                endpoint_b = (dst_ip, dst_port)
+                key = (
+                    endpoint_a,
+                    endpoint_b,
+                    protocol,
+                ) if endpoint_a <= endpoint_b else (
+                    endpoint_b,
+                    endpoint_a,
+                    protocol,
+                )
+
+                if key not in flows:
+                    flows[key] = {
+                        "src_ip": src_ip,
+                        "dst_ip": dst_ip,
+                        "src_port": src_port,
+                        "dst_port": dst_port,
+                        "proto": protocol,
+                        "start": timestamp,
+                        "end": timestamp,
+                        "forward_packets": 0,
+                        "backward_packets": 0,
+                        "forward_bytes": 0,
+                        "backward_bytes": 0,
+                        "forward_times": [],
+                        "backward_times": [],
+                        "forward_ttl": src_ttl,
+                        "backward_ttl": dst_ttl,
+                        "syn": 0,
+                        "fin": 0,
+                        "rst": 0,
+                        "forward_window": tcp_window,
+                        "backward_window": 0,
+                        "forward_seq": tcp_seq,
+                        "backward_seq": 0,
+                        "tcp_rtt": 0.0,
+                    }
+
+                flow = flows[key]
+                is_forward = (
+                    src_ip == flow["src_ip"]
+                    and src_port == flow["src_port"]
+                )
+
+                flow["end"] = timestamp
+
+                if is_forward:
+                    flow["forward_packets"] += 1
+                    flow["forward_bytes"] += packet_size
+                    flow["forward_times"].append(timestamp)
+                else:
+                    flow["backward_packets"] += 1
+                    flow["backward_bytes"] += packet_size
+                    flow["backward_times"].append(timestamp)
+                    if TCP in packet:
+                        flow["backward_window"] = tcp_window
+                        flow["backward_seq"] = tcp_seq
+
+                if "S" in tcp_flags:
+                    flow["syn"] += 1
+                if "F" in tcp_flags:
+                    flow["fin"] += 1
+                if "R" in tcp_flags:
+                    flow["rst"] += 1
+
                 line = (
-                    f"Packet {packet_count}: "
-                    f"src={src_ip}:{src_port}, "
-                    f"dst={dst_ip}:{dst_port}, "
-                    f"protocol={protocol}, "
-                    f"length={len(packet)} bytes, "
-                    f"TCP_flags={tcp_flags}"
+                    f"Packet {packet_count}: {src_ip}:{src_port} → "
+                    f"{dst_ip}:{dst_port}, protocol={protocol}, "
+                    f"length={packet_size}, TCP_flags={tcp_flags or '-'}"
                 )
 
                 if DNS in packet and packet[DNS].qd and DNSQR in packet:
@@ -90,17 +208,71 @@ def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
     except Exception as exc:
         raise ValueError(f"Could not read this PCAP file: {exc}") from exc
 
-    if not packet_lines:
-        return {
-            "packet_count": packet_count,
-            "protocol_counts": protocol_counts,
-            "packet_lines": [],
-            "full_context": "No packets were found in the uploaded PCAP.",
-            "llm_context": "No packets were found in the uploaded PCAP.",
+    flow_rows = []
+
+    for flow in flows.values():
+        duration = max(flow["end"] - flow["start"], 0.0)
+        forward_count = flow["forward_packets"]
+        backward_count = flow["backward_packets"]
+        forward_bytes = flow["forward_bytes"]
+        backward_bytes = flow["backward_bytes"]
+
+        forward_intervals = [
+            b - a for a, b in zip(
+                flow["forward_times"], flow["forward_times"][1:]
+            )
+        ]
+        backward_intervals = [
+            b - a for a, b in zip(
+                flow["backward_times"], flow["backward_times"][1:]
+            )
+        ]
+
+        row = {
+            "src_ip": flow["src_ip"],
+            "dst_ip": flow["dst_ip"],
+            "src_port": flow["src_port"],
+            "dst_port": flow["dst_port"],
+            "proto": flow["proto"],
+            "dur": duration,
+            "spkts": forward_count,
+            "dpkts": backward_count,
+            "sbytes": forward_bytes,
+            "dbytes": backward_bytes,
+            "rate": (forward_count + backward_count) / duration
+            if duration > 0 else 0,
+            "sinpkt": sum(forward_intervals) / len(forward_intervals)
+            if forward_intervals else 0,
+            "dinpkt": sum(backward_intervals) / len(backward_intervals)
+            if backward_intervals else 0,
+            "sttl": flow["forward_ttl"],
+            "dttl": flow["backward_ttl"],
+            "sload": forward_bytes / duration if duration > 0 else 0,
+            "dload": backward_bytes / duration if duration > 0 else 0,
+            "sloss": 0,
+            "dloss": 0,
+            "swin": flow["forward_window"],
+            "dwin": flow["backward_window"],
+            "stcpb": flow["forward_seq"],
+            "dtcpb": flow["backward_seq"],
+            "tcprtt": flow["tcp_rtt"],
+            "synack": 0,
+            "ackdat": 0,
+            "smean": forward_bytes / forward_count if forward_count else 0,
+            "dmean": backward_bytes / backward_count if backward_count else 0,
+            "state": "CON" if flow["proto"] == "TCP" else "INT",
+            "service": "dns" if 53 in (
+                flow["src_port"], flow["dst_port"]
+            ) else "-",
+            "tcp_syn_count": flow["syn"],
+            "tcp_fin_count": flow["fin"],
+            "tcp_rst_count": flow["rst"],
         }
+        flow_rows.append(row)
 
     summary_lines = [
         f"Packets analyzed: {len(packet_lines)}",
+        f"Flows extracted: {len(flow_rows)}",
         "Protocol counts: "
         + ", ".join(
             f"{protocol}={count}"
@@ -108,28 +280,65 @@ def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
         ),
     ]
 
-    full_context = "\n".join(summary_lines + ["", "Packet details:"] + packet_lines)
-
-    # Send only a short sample to the LLM, not the entire PCAP.
-    llm_packet_sample = packet_lines[:MAX_PACKET_LINES_FOR_LLM]
     llm_context = "\n".join(
         summary_lines
         + [
             "",
-            f"Sample: first {len(llm_packet_sample)} packet records",
-            *llm_packet_sample,
+            "Sample packet details:",
+            *packet_lines[:MAX_PACKET_LINES_FOR_LLM],
         ]
-    )
-    llm_context = llm_context[:MAX_CONTEXT_CHARS_FOR_LLM]
+    )[:MAX_CONTEXT_CHARS_FOR_LLM]
 
     return {
         "packet_count": len(packet_lines),
         "protocol_counts": protocol_counts,
         "packet_lines": packet_lines,
-        "full_context": full_context,
+        "flow_rows": flow_rows,
+        "full_context": "\n".join(
+            summary_lines + ["", "Packet details:"] + packet_lines
+        ),
         "llm_context": llm_context,
     }
 
+
+# -------------------- ML prediction --------------------
+
+def predict_flows(flow_rows, model, feature_columns, label_map):
+    if not flow_rows:
+        return pd.DataFrame(), pd.DataFrame()
+
+    raw_features = pd.DataFrame(flow_rows)
+
+    # Add missing expected columns and preserve the training column order.
+    model_features = raw_features.reindex(
+        columns=feature_columns,
+        fill_value=0,
+    )
+
+    # Replace any invalid numeric values before prediction.
+    model_features = model_features.replace(
+        [float("inf"), float("-inf")], 0
+    ).fillna(0)
+
+    predictions = model.predict(model_features)
+
+    results = raw_features[
+        ["src_ip", "src_port", "dst_ip", "dst_port", "proto"]
+    ].copy()
+
+    results["ML prediction"] = [
+        label_map.get(str(pred), label_map.get(pred, str(pred)))
+        for pred in predictions
+    ]
+
+    if hasattr(model, "predict_proba"):
+        probabilities = model.predict_proba(model_features)
+        results["Confidence"] = probabilities.max(axis=1).round(3)
+
+    return results, model_features
+
+
+# -------------------- Streamlit interface --------------------
 
 uploaded_file = st.file_uploader(
     "Upload a PCAP or PCAPNG file",
@@ -145,15 +354,17 @@ if uploaded_file is not None:
     st.write(f"Uploaded file: **{uploaded_file.name}**")
 
     if st.button("Analyze PCAP", type="primary"):
-        with st.spinner("Reading packet information..."):
+        with st.spinner("Extracting packet and flow features..."):
             try:
                 result = extract_pcap_context(uploaded_file)
             except ValueError as exc:
                 st.error(str(exc))
                 st.stop()
 
-        st.subheader("Packet Summary")
-        st.write(f"Packets analyzed: **{result['packet_count']}**")
+        st.subheader("Traffic Summary")
+        col1, col2 = st.columns(2)
+        col1.metric("Packets analyzed", result["packet_count"])
+        col2.metric("Flows extracted", len(result["flow_rows"]))
 
         if result["protocol_counts"]:
             st.write(
@@ -164,26 +375,64 @@ if uploaded_file is not None:
                 )
             )
 
-        with st.expander("View extracted packet details"):
-            st.text(result["full_context"][:30000])
-            if len(result["full_context"]) > 30000:
-                st.caption("Display truncated.")
+        with st.expander("Extracted flow features"):
+            st.dataframe(pd.DataFrame(result["flow_rows"]), use_container_width=True)
 
+        st.subheader("ML Detection")
+        try:
+            model, feature_columns, label_map = load_model(MODEL_PATH)
+            predictions, model_input = predict_flows(
+                result["flow_rows"],
+                model,
+                feature_columns,
+                label_map,
+            )
+
+            if predictions.empty:
+                st.info("No IP-based flows were extracted from this file.")
+            else:
+                st.dataframe(predictions, use_container_width=True)
+
+            st.caption(
+                "Experimental output: confirm that the PCAP extractor produces "
+                "the same features and preprocessing used to train the model."
+            )
+
+            with st.expander("Exact feature table passed to model.joblib"):
+                st.dataframe(model_input, use_container_width=True)
+
+        except Exception as exc:
+            st.error(f"Could not run model.joblib: {exc}")
+            st.info(
+                "Check that model.joblib is in the same folder as app.py, "
+                "and that it contains the trained model plus its feature columns."
+            )
+            predictions = pd.DataFrame()
+
+        ml_context = (
+            "ML flow predictions:\n"
+            + predictions.to_string(index=False)
+            if not predictions.empty
+            else "ML prediction was not available."
+        )
+
+        st.subheader("SOC Analysis")
         with st.spinner("Generating SOC analysis..."):
             answer = explain_answer(
                 query=question.strip()
                 or "Summarize this traffic and identify anything suspicious.",
-                base_answer=result["llm_context"],
+                base_answer=(
+                    result["llm_context"]
+                    + "\n\n"
+                    + ml_context
+                ),
             )
-
-        st.subheader("Analysis")
 
         if answer.startswith("LLM_ERROR:"):
             st.error(answer)
             st.info(
-                "Check that GROQ_API_KEY is configured in your .env file "
-                "or Streamlit Cloud Secrets, and confirm that the selected "
-                "Groq model is available to your account."
+                "Check GROQ_API_KEY in your .env file or Streamlit Cloud "
+                "Secrets, and confirm that the selected Groq model is available."
             )
         else:
             st.write(answer)

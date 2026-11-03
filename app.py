@@ -99,7 +99,7 @@ small, [data-testid="stCaptionContainer"] { color:#d5e3f5 !important; font-size:
 MAX_PACKETS = 10000
 MODEL_PATH = "/tmp/model_bundle.joblib"
 DRIVE_ID = "1QSBGKdxnXwX1gzG1n_EO6rMAznARfDpy"
-PAGES = ["Dashboard", "ML Findings", "AI Analyst", "Statistics", "View PCAP File", "Flows", "About"]
+PAGES = ["Dashboard", "ML Findings", "AI Analyst", "Statistics", "About"]
 
 defaults = {
     "page": "Dashboard", "pcap_context": "", "ml_context": "",
@@ -118,8 +118,6 @@ with st.sidebar:
         "ML Findings": "🧠  ML Findings",
         "AI Analyst": "🤖  AI Analyst",
         "Statistics": "📈  Statistics",
-        "View PCAP File": "📄  View PCAP File",
-        "Flows": "🔀  Flows",
         "About": "ℹ️  About",
     }
     for page in PAGES:
@@ -300,32 +298,31 @@ def make_findings_pdf(summary, findings):
 header_path = os.path.join(os.path.dirname(__file__), "soc_header.png")
 if os.path.exists(header_path):
     st.image(header_path, use_container_width=True)
-if st.session_state.page == "Dashboard":
-    preds = st.session_state.predictions
-    if preds is None:
-        preds = pd.DataFrame()
-    total_alerts = critical = 0
-    if not preds.empty:
-        labels = preds["ML prediction"].astype(str).str.lower()
-        total_alerts = int((~labels.str.contains("normal|benign", regex=True)).sum())
-        critical = int(labels.str.contains("critical|malicious|attack|intrusion").sum())
-    a, b, c = st.columns(3)
-    a.metric("Sessions", int(st.session_state.pcap_analyzed))
-    b.metric("Total Alerts", total_alerts)
-    c.metric("Critical", critical)
 
-    st.subheader("Analyze Network Traffic")
-    capture = st.file_uploader("Select your PCAP or PCAPNG file", type=["pcap", "pcapng"], key="dashboard_pcap")
+if st.session_state.page == "Dashboard":
+    st.markdown(
+        "<h1 style='font-size:36px!important; margin:18px 0 12px;'>UPLOAD PCAP FILE</h1>",
+        unsafe_allow_html=True,
+    )
+    capture = st.file_uploader(
+        "Choose a PCAP or PCAPNG file",
+        type=["pcap", "pcapng"],
+        key="dashboard_pcap",
+    )
     if capture:
-        st.write(f"Selected file: **{capture.name}**")
-        if st.button("🚀 Analyze Now", type="primary", key="analyze"):
+        st.caption(f"Selected file: {capture.name}")
+
+    if st.button("ANALYZE PCAP", type="primary", key="analyze", use_container_width=True):
+        if capture is None:
+            st.warning("Upload a PCAP/PCAPNG file before analyzing.")
+        else:
             try:
-                with st.spinner("Analyzing packets and flows..."):
+                with st.spinner("Analyzing packets and extracting flows..."):
                     result = extract_pcap_context(capture)
                     model, cols, labels = load_model()
                     findings, model_input = predict_flows(result["flow_rows"], model, cols, labels)
                 st.session_state.pcap_context = result["llm_context"]
-                st.session_state.ml_context = "ML flow predictions:\n" + findings.to_string(index=False)
+                st.session_state.ml_context = "ML flow predictions:\\n" + findings.to_string(index=False)
                 st.session_state.flow_rows = result["flow_rows"]
                 st.session_state.packet_lines = result["packet_lines"]
                 st.session_state.protocol_counts = dict(result["protocol_counts"])
@@ -335,19 +332,35 @@ if st.session_state.page == "Dashboard":
                 st.session_state.model_input = model_input
                 st.session_state.pcap_analyzed = True
                 st.session_state.ai_answer = ""
-                st.success("Analysis complete. Open ML Findings to review the results.")
+                st.success("Analysis complete.")
             except Exception as exc:
                 st.error(f"PCAP analysis failed: {exc}")
+
     if st.session_state.pcap_analyzed:
-        x, y, z = st.columns(3)
-        x.metric("Packets analyzed", st.session_state.packet_count)
-        y.metric("Flows extracted", len(st.session_state.flow_rows))
-        z.metric("Protocols", len(st.session_state.protocol_counts))
-        if st.button("Open ML Findings"):
-            st.session_state.page = "ML Findings"
-            st.rerun()
-
-
+        st.markdown(
+            f"<h2 style='font-size:28px!important;'>Analysis complete — "
+            f"{st.session_state.packet_count} packets · {len(st.session_state.flow_rows)} flows</h2>",
+            unsafe_allow_html=True,
+        )
+        with st.expander("ACTUAL PACKETS", expanded=False):
+            packet_search = st.text_input("Search packet records", key="dashboard_packet_search")
+            packet_rows = st.session_state.packet_lines
+            if packet_search:
+                packet_rows = [p for p in packet_rows if packet_search.lower() in p.lower()]
+            st.dataframe(
+                pd.DataFrame({"Packet details": packet_rows}),
+                use_container_width=True,
+                hide_index=True,
+            )
+        with st.expander("EXTRACTED FLOWS", expanded=False):
+            flow_frame = pd.DataFrame(st.session_state.flow_rows)
+            flow_search = st.text_input("Search extracted flows", key="dashboard_flow_search")
+            if flow_search and not flow_frame.empty:
+                matches = flow_frame.astype(str).apply(
+                    lambda col: col.str.contains(flow_search, case=False, na=False)
+                ).any(axis=1)
+                flow_frame = flow_frame[matches]
+            st.dataframe(flow_frame, use_container_width=True, hide_index=True)
 # ML Findings
 elif st.session_state.page == "ML Findings":
     st.title("ML Findings")

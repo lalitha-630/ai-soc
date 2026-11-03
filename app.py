@@ -41,7 +41,7 @@ for key, value in defaults.items():
 
 with st.sidebar:
     st.title("🛡️ AI-SOC")
-    st.caption("Threat Analyzer")
+    st.caption("THREAT ANALYZER")
     st.divider()
     for page in PAGES:
         if st.button(page, key=f"nav_{page}", type="primary" if st.session_state.page == page else "secondary"):
@@ -218,6 +218,15 @@ def make_findings_pdf(summary, findings):
 
 
 # Dashboard
+header_path = os.path.join(os.path.dirname(__file__), "soc_header.png")
+if os.path.exists(header_path):
+    st.image(header_path, use_container_width=True)
+st.markdown(
+    "<h1 style='margin:0;color:#eaf4ff;letter-spacing:1px'>AI-SOC THREAT ANALYZER</h1>"
+    "<p style='margin-top:4px;color:#8da9c8'>Network traffic analysis · ML findings · AI-assisted investigation</p>",
+    unsafe_allow_html=True,
+)
+
 if st.session_state.page == "Dashboard":
     st.title("AI-SOC v3.0")
     st.caption("Threat Analyzer")

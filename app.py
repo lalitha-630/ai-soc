@@ -15,85 +15,84 @@ st.set_page_config(page_title="AI-SOC Threat Analyzer", page_icon="🛡️", lay
 
 st.markdown("""
 <style>
-/* Base theme and readable contrast */
-.stApp { background:#0b1220; color:#e8eef8; font-size:18px; }
-[data-testid="stSidebar"] { background:#111c30; border-right:1px solid #263750; }
-[data-testid="stSidebar"] * { color:#e8eef8; }
-h1 { color:#f8fafc; font-size:2.15rem !important; }
-h2 { color:#f8fafc; font-size:1.65rem !important; }
-h3 { color:#eaf2ff; font-size:1.3rem !important; }
-p, label, [data-testid="stMarkdownContainer"] { font-size:18px; }
+/* Dark navy canvas with white, larger text */
+.stApp { background:#081426; color:#ffffff; font-size:21px; }
+[data-testid="stSidebar"] { background:#101f35; border-right:1px solid #2b4566; }
+[data-testid="stSidebar"] * { color:#ffffff; }
+h1 { color:#ffffff; font-size:2.55rem !important; }
+h2 { color:#ffffff; font-size:2rem !important; font-style:italic; }
+h3 { color:#ffffff; font-size:1.6rem !important; font-style:italic; }
+p, label, [data-testid="stMarkdownContainer"] { color:#ffffff; font-size:21px; }
+small, [data-testid="stCaptionContainer"] { color:#d5e3f5 !important; font-size:16px !important; }
 
-/* Section titles: larger, italic, and visually distinct */
-h2, h3 { font-style:italic; }
+/* Space between sections */
 [data-testid="stVerticalBlock"] > [data-testid="stVerticalBlockBorderWrapper"] {
     margin-bottom:20px;
 }
 
-/* Navigation buttons */
-[data-testid="stSidebar"] {
-    min-width: 280px;
-    width: 280px;
-}
-[data-testid="stSidebar"] > div:first-child {
-    padding: 1.5rem 1rem;
-}
-[data-testid="stSidebar"] h1 {
-    font-size: 2.1rem !important;
-    line-height: 1.2;
-}
-[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
-    font-size: 1rem !important;
-}
+/* Sidebar branding and navigation */
+[data-testid="stSidebar"] { min-width:280px; width:280px; }
+[data-testid="stSidebar"] > div:first-child { padding:1.5rem 1rem; }
+[data-testid="stSidebar"] h1 { font-size:2.35rem !important; line-height:1.2; }
 [data-testid="stSidebar"] .stButton > button {
-    width:100%; min-height:58px; text-align:left; font-size:22px;
-    font-weight:700; border-radius:10px; padding:12px 16px;
-    background:#1b3555; color:#f5f9ff; border:1px solid #345477;
+    width:100%; min-height:62px; text-align:left; font-size:23px;
+    font-weight:700; border-radius:10px; padding:13px 16px;
+    background:#1b3555; color:#ffffff; border:1px solid #45678e;
 }
 [data-testid="stSidebar"] .stButton > button:hover {
-    background:#174b79; border-color:#22d3ee; color:#ffffff;
+    background:#24517d; border-color:#67e8f9; color:#ffffff;
 }
 
-/* Main action and download buttons */
+/* Buttons */
 .stButton > button, .stDownloadButton > button {
-    min-height:44px; font-size:18px; font-weight:600;
-    background:linear-gradient(100deg,#06b6d4,#2563eb,#7c3aed);
-    color:#ffffff; border:0; border-radius:9px;
+    min-height:50px; font-size:21px; font-weight:700;
+    background:linear-gradient(100deg,#087eaa,#2456a6,#5b35a6);
+    color:#ffffff; border:1px solid #4776b5; border-radius:10px;
 }
 .stButton > button:hover, .stDownloadButton > button:hover {
     color:#ffffff; border:1px solid #67e8f9;
 }
 
-/* Metrics and content cards */
+/* Metrics */
 [data-testid="stMetric"] {
-    background:#17243a; border:1px solid #263750;
-    padding:18px; border-radius:12px; margin-bottom:20px;
+    background:#142640; border:1px solid #2b4566;
+    padding:20px; border-radius:12px; margin-bottom:20px;
 }
-[data-testid="stMetricLabel"] { color:#b7c8df !important; font-size:16px !important; }
-[data-testid="stMetricValue"] { color:#22d3ee !important; font-size:32px !important; }
+[data-testid="stMetricLabel"] { color:#e2edfc !important; font-size:19px !important; }
+[data-testid="stMetricValue"] { color:#ffffff !important; font-size:38px !important; }
 
-/* Inputs: keep text dark on Streamlit's light input surfaces */
+/* Replace white input/file-upload surfaces with navy; keep text white */
 [data-testid="stFileUploader"] section,
 [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {
-    background:#f3f6fb !important; color:#172033 !important;
-    border-radius:9px;
+    background:#142640 !important; color:#ffffff !important;
+    border:1px solid #385779 !important; border-radius:10px;
 }
 [data-testid="stFileUploader"] section *,
 [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] * {
-    color:#172033 !important;
+    color:#ffffff !important; font-size:18px !important;
 }
-.stTextInput input, .stTextArea textarea, .stSelectbox [data-baseweb="select"] {
-    background:#f3f6fb !important; color:#172033 !important;
-    font-size:17px !important; border-radius:8px;
+.stTextInput input, .stTextArea textarea,
+.stSelectbox [data-baseweb="select"],
+.stNumberInput input, .stDateInput input {
+    background:#142640 !important; color:#ffffff !important;
+    font-size:20px !important; border:1px solid #385779 !important;
+    border-radius:8px;
 }
 .stTextInput label, .stTextArea label, .stSelectbox label {
-    color:#dbeafe !important; font-size:17px !important;
+    color:#ffffff !important; font-size:19px !important;
 }
 
-/* Tables and expanders */
-[data-testid="stDataFrame"] { border:1px solid #263750; border-radius:8px; }
-[data-testid="stExpander"] { border:1px solid #263750; border-radius:9px; margin-bottom:20px; }
-[data-testid="stExpander"] summary { font-size:18px; font-weight:600; }
+/* Tables, expanders, and alerts */
+[data-testid="stDataFrame"] {
+    border:1px solid #2b4566; border-radius:8px;
+    color:#ffffff;
+}
+[data-testid="stExpander"] {
+    background:#142640; border:1px solid #2b4566;
+    border-radius:9px; margin-bottom:20px;
+}
+[data-testid="stExpander"] summary { color:#ffffff; font-size:20px; font-weight:700; }
+[data-testid="stAlert"] { font-size:19px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -113,8 +112,6 @@ for key, value in defaults.items():
         st.session_state[key] = value
 
 with st.sidebar:
-    st.title("🛡️ AI-SOC")
-    st.caption("THREAT ANALYZER")
     st.divider()
     nav_labels = {
         "Dashboard": "📊  Dashboard",
@@ -303,15 +300,7 @@ def make_findings_pdf(summary, findings):
 header_path = os.path.join(os.path.dirname(__file__), "soc_header.png")
 if os.path.exists(header_path):
     st.image(header_path, use_container_width=True)
-st.markdown(
-    "<h1 style='margin:0;color:#eaf4ff;letter-spacing:1px'>AI-SOC THREAT ANALYZER</h1>"
-    "<p style='margin-top:4px;color:#8da9c8'>Network traffic analysis · ML findings · AI-assisted investigation</p>",
-    unsafe_allow_html=True,
-)
-
 if st.session_state.page == "Dashboard":
-    st.title("AI-SOC v3.0")
-    st.caption("Threat Analyzer")
     preds = st.session_state.predictions
     if preds is None:
         preds = pd.DataFrame()

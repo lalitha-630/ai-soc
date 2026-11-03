@@ -1,69 +1,79 @@
 import os
+
 from groq import Groq
 
-# Try loading .env locally (won’t break in cloud if not present)
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except:
-    pass
 
-# -------------------------------
-# Load API Key (LOCAL + CLOUD)
-# -------------------------------
-api_key = os.getenv("GROQ_API_KEY")
+def get_api_key():
+    """Read the Groq API key from environment variables or Streamlit secrets."""
+    api_key = os.getenv("GROQ_API_KEY")
 
-# If not found, try Streamlit secrets
-if not api_key:
-    try:
-        import streamlit as st
-        api_key = st.secrets.get("GROQ_API_KEY")
-    except:
-        pass
+    if not api_key:
+        try:
+            import streamlit as st
+            api_key = st.secrets.get("GROQ_API_KEY")
+        except Exception:
+            api_key = None
 
-if not api_key:
-    raise ValueError("GROQ_API_KEY not found. Set it in .env (local) or Streamlit Secrets (cloud).")
+    if not api_key:
+        raise ValueError(
+            "GROQ_API_KEY is missing. Add it to your .env file "
+            "or Streamlit Cloud Secrets."
+        )
 
-# -------------------------------
-# Initialize client
-# -------------------------------
-client = Groq(api_key=api_key)
+    return api_key
 
 
-# -------------------------------
-# LLM Function
-# -------------------------------
 def explain_answer(query: str, base_answer: str) -> str:
+    """Explain the supplied PCAP findings in a SOC analyst style."""
     try:
+        client = Groq(api_key=get_api_key())
+
         response = client.chat.completions.create(
             model="openai/gpt-oss-20b",
-            temperature=0.4,
-            max_tokens=500,
+            temperature=0.3,
+            max_tokens=700,
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a SOC analyst. Explain alerts with risk and action."
+                    "content": (
+                        "You are a SOC analyst assisting with network traffic "
+                        "triage. Use only the supplied packet evidence. "
+                        "Do not claim that an attack is confirmed unless the "
+                        "evidence supports it. Clearly distinguish observations "
+                        "from hypotheses. If evidence is insufficient, say so."
+                    ),
                 },
                 {
                     "role": "user",
                     "content": f"""
-Query:
+Analyst question:
 {query}
 
-Detection Result:
+PCAP evidence:
 {base_answer}
 
-Explain clearly:
-1. Meaning
-2. Attack type
-3. Risk level
-4. Action
-"""
-                }
+Provide:
+1. Summary of the observed traffic
+2. Potential security concern or attack type, if supported
+3. Risk level (Low, Medium, High, or Inconclusive) with a brief reason
+4. Recommended investigation or response steps
+
+Keep the answer clear and concise.
+""",
+                },
             ],
         )
 
-        return response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
 
-    except Exception as e:
-        return f"{base_answer}\n\n[GROQ ERROR: {str(e)}]"
+        if not content or not content.strip():
+            finish_reason = response.choices[0].finish_reason
+            raise RuntimeError(
+                f"Groq returned empty content. Finish reason: {finish_reason}"
+            )
+
+        return content.strip()
+
+    except Exception as exc:
+        # Return a readable error so the app can display it.
+        return f"LLM_ERROR: {type(exc).__name__}: {exc}"

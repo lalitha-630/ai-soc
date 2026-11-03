@@ -9,3 +9,4 @@ scikit-learn
 scapy
 gdown
 joblib
+pandas

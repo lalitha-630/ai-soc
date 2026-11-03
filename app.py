@@ -1,202 +1,170 @@
+import io
+from collections import Counter
+
 import streamlit as st
+from scapy.all import PcapReader, IP, IPv6, TCP, UDP, DNS, DNSQR
+
 from llm import explain_answer
-from sentence_transformers import SentenceTransformer
-from scapy.utils import PcapReader
-from scapy.layers.inet import IP, TCP, UDP
-from scapy.layers.inet6 import IPv6
-from scapy.layers.dns import DNS, DNSQR
-import faiss
-import numpy as np
-from io import BytesIO
 
 
-# -------------------------------
-# Load embedding model
-# -------------------------------
-@st.cache_resource
-def load_embedding_model():
-    return SentenceTransformer("all-MiniLM-L6-v2")
+st.set_page_config(
+    page_title="AI-SOC Threat Analyzer",
+    page_icon="🛡️",
+    layout="wide",
+)
+
+st.title("AI-SOC Threat Analyzer")
+st.write(
+    "Upload a PCAP file to summarize its packet-level network activity "
+    "and request a SOC-style explanation."
+)
 
 
-embed_model = load_embedding_model()
-
-
-# -------------------------------
-# Extract packet metadata from PCAP
-# -------------------------------
-def extract_pcap_text(pcap_file, max_packets=10000):
+def extract_pcap_context(uploaded_file, max_packets=10000):
+    """Extract readable packet metadata from a PCAP file."""
     packet_lines = []
-    reader = PcapReader(BytesIO(pcap_file.getvalue()))
+    protocol_counts = Counter()
+    packet_count = 0
+
+    # Scapy's PcapReader accepts a file-like object.
+    file_bytes = io.BytesIO(uploaded_file.getvalue())
 
     try:
-        for packet_number, packet in enumerate(reader, start=1):
-            if packet_number > max_packets:
-                packet_lines.append(
-                    f"Capture truncated after {max_packets} packets."
+        with PcapReader(file_bytes) as reader:
+            for packet in reader:
+                packet_count += 1
+
+                if packet_count > max_packets:
+                    packet_lines.append(
+                        f"Packet limit reached: analyzed first {max_packets} packets."
+                    )
+                    break
+
+                src_ip = "Unknown"
+                dst_ip = "Unknown"
+
+                if IP in packet:
+                    src_ip = packet[IP].src
+                    dst_ip = packet[IP].dst
+                elif IPv6 in packet:
+                    src_ip = packet[IPv6].src
+                    dst_ip = packet[IPv6].dst
+
+                protocol = "Other"
+                src_port = "-"
+                dst_port = "-"
+                tcp_flags = "-"
+
+                if TCP in packet:
+                    protocol = "TCP"
+                    src_port = packet[TCP].sport
+                    dst_port = packet[TCP].dport
+                    tcp_flags = str(packet[TCP].flags)
+                elif UDP in packet:
+                    protocol = "UDP"
+                    src_port = packet[UDP].sport
+                    dst_port = packet[UDP].dport
+
+                protocol_counts[protocol] += 1
+
+                line = (
+                    f"Packet {packet_count}: "
+                    f"src={src_ip}:{src_port}, "
+                    f"dst={dst_ip}:{dst_port}, "
+                    f"protocol={protocol}, "
+                    f"length={len(packet)} bytes, "
+                    f"TCP_flags={tcp_flags}"
                 )
-                break
 
-            src_ip = dst_ip = "Unknown"
-            src_port = dst_port = "N/A"
-            protocol = "Other"
-            tcp_flags = "N/A"
+                if DNS in packet and packet[DNS].qd and DNSQR in packet:
+                    dns_query = packet[DNSQR].qname
+                    if isinstance(dns_query, bytes):
+                        dns_query = dns_query.decode(
+                            "utf-8", errors="replace"
+                        )
+                    line += f", DNS_query={dns_query}"
 
-            if IP in packet:
-                src_ip = packet[IP].src
-                dst_ip = packet[IP].dst
-            elif IPv6 in packet:
-                src_ip = packet[IPv6].src
-                dst_ip = packet[IPv6].dst
+                packet_lines.append(line)
 
-            if TCP in packet:
-                protocol = "TCP"
-                src_port = packet[TCP].sport
-                dst_port = packet[TCP].dport
-                tcp_flags = str(packet[TCP].flags)
-            elif UDP in packet:
-                protocol = "UDP"
-                src_port = packet[UDP].sport
-                dst_port = packet[UDP].dport
+    except Exception as exc:
+        raise ValueError(f"Could not read this PCAP file: {exc}") from exc
 
-            packet_info = (
-                f"Packet {packet_number}: "
-                f"src={src_ip}:{src_port}, "
-                f"dst={dst_ip}:{dst_port}, "
-                f"protocol={protocol}, "
-                f"length={len(packet)} bytes, "
-                f"TCP_flags={tcp_flags}"
+    if not packet_lines:
+        return "No packets were found in the uploaded PCAP.", packet_count, protocol_counts
+
+    summary = [
+        f"Packets analyzed: {min(packet_count, max_packets)}",
+        "Protocol counts: "
+        + ", ".join(
+            f"{protocol}={count}"
+            for protocol, count in protocol_counts.most_common()
+        ),
+        "",
+        "Packet details:",
+        *packet_lines,
+    ]
+
+    return "\n".join(summary), packet_count, protocol_counts
+
+
+uploaded_file = st.file_uploader(
+    "Upload a PCAP or PCAPNG file",
+    type=["pcap", "pcapng"],
+)
+
+question = st.text_input(
+    "Question",
+    value="Summarize this traffic and identify anything suspicious.",
+)
+
+if uploaded_file is not None:
+    st.write(f"Uploaded file: **{uploaded_file.name}**")
+
+    if st.button("Analyze PCAP", type="primary"):
+        with st.spinner("Reading packet information..."):
+            try:
+                context, packet_count, protocol_counts = extract_pcap_context(
+                    uploaded_file
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+                st.stop()
+
+        st.subheader("Packet Summary")
+        st.write(f"Packets read: **{packet_count}**")
+
+        if protocol_counts:
+            st.write(
+                "Protocol counts: "
+                + ", ".join(
+                    f"{protocol}: {count}"
+                    for protocol, count in protocol_counts.most_common()
+                )
             )
 
-            if DNS in packet and packet[DNS].qd and DNSQR in packet:
-                dns_query = packet[DNSQR].qname.decode(
-                    "utf-8", errors="replace"
-                ).rstrip(".")
-                packet_info += f", DNS_query={dns_query}"
+        with st.expander("View extracted packet details"):
+            st.text(context[:20000])
+            if len(context) > 20000:
+                st.caption("Display truncated; the full extracted context was sent for analysis.")
 
-            packet_lines.append(packet_info)
+        with st.spinner("Generating SOC analysis..."):
+            answer = explain_answer(
+                query=question.strip()
+                or "Summarize this traffic and identify anything suspicious.",
+                base_answer=context[:30000],
+            )
 
-    finally:
-        reader.close()
+        st.subheader("Analysis")
 
-    return "\n".join(packet_lines)
+        if answer.startswith("LLM_ERROR:"):
+            st.error(answer)
+            st.info(
+                "Check that GROQ_API_KEY is configured in your local .env "
+                "file or Streamlit Cloud Secrets, and confirm that the selected "
+                "Groq model is available to your account."
+            )
+        else:
+            st.write(answer)
 
-
-# -------------------------------
-# Split extracted text into chunks
-# -------------------------------
-def chunk_text(text, chunk_size=300):
-    words = text.split()
-
-    return [
-        " ".join(words[i:i + chunk_size])
-        for i in range(0, len(words), chunk_size)
-    ]
-
-
-# -------------------------------
-# Create FAISS vector store
-# -------------------------------
-def create_vector_store(chunks):
-    embeddings = embed_model.encode(
-        chunks,
-        convert_to_numpy=True
-    ).astype("float32")
-
-    index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(embeddings)
-
-    return index
-
-
-# -------------------------------
-# Retrieve relevant chunks
-# -------------------------------
-def retrieve(query, chunks, index, k=3):
-    query_embedding = embed_model.encode(
-        [query],
-        convert_to_numpy=True
-    ).astype("float32")
-
-    k = min(k, len(chunks))
-    _, indices = index.search(query_embedding, k)
-
-    return [
-        chunks[i]
-        for i in indices[0]
-        if 0 <= i < len(chunks)
-    ]
-
-
-# -------------------------------
-# Streamlit UI
-# -------------------------------
-st.title("AI-SOC PCAP Analysis + RAG")
-
-pcap_file = st.file_uploader(
-    "Upload a PCAP file",
-    type=["pcap", "pcapng"]
-)
-
-query = st.text_area(
-    "Ask a question about the network traffic:",
-    placeholder="Example: Are there suspicious flows in this capture?"
-)
-
-if st.button("Analyze PCAP and answer"):
-    if pcap_file is None:
-        st.warning("Upload a PCAP file first.")
-
-    elif not query.strip():
-        st.warning("Enter a question first.")
-
-    else:
-        with st.spinner("Analyzing PCAP and generating an answer..."):
-            try:
-                pcap_text = extract_pcap_text(pcap_file)
-
-                if not pcap_text.strip():
-                    st.error("No readable packet data was found in this PCAP.")
-                    st.stop()
-
-                chunks = chunk_text(pcap_text)
-
-                if not chunks:
-                    st.error("Could not create searchable chunks from this PCAP.")
-                    st.stop()
-
-                index = create_vector_store(chunks)
-                docs = retrieve(query, chunks, index)
-                context = "\n\n".join(docs)
-
-                final_query = f"""
-You are assisting a SOC analyst reviewing a PCAP capture.
-
-Use only the packet information provided below.
-Identify traffic patterns that may deserve investigation.
-Do not label traffic as malicious based only on a port or protocol.
-If there is insufficient evidence, clearly say so.
-
-Packet information:
-{context}
-
-Question:
-{query}
-"""
-
-                answer = explain_answer(
-                    final_query,
-                    "Answer based on the supplied PCAP packet information."
-                )
-
-                st.subheader("Analysis")
-
-                if answer and str(answer).strip():
-                    st.write(answer)
-                else:
-                    st.error(
-                        "The LLM returned an empty answer. "
-                        "Check that explain_answer() in llm.py returns text."
-                    )
-
-            except Exception as e:
-                st.error(f"Analysis failed: {e}")
+else:
+    st.info("Upload a PCAP or PCAPNG file to begin.")

@@ -31,9 +31,23 @@ h2, h3 { font-style:italic; }
 }
 
 /* Navigation buttons */
+[data-testid="stSidebar"] {
+    min-width: 280px;
+    width: 280px;
+}
+[data-testid="stSidebar"] > div:first-child {
+    padding: 1.5rem 1rem;
+}
+[data-testid="stSidebar"] h1 {
+    font-size: 2.1rem !important;
+    line-height: 1.2;
+}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+    font-size: 1rem !important;
+}
 [data-testid="stSidebar"] .stButton > button {
-    width:100%; min-height:46px; text-align:left; font-size:18px;
-    font-weight:600; border-radius:9px; padding:8px 12px;
+    width:100%; min-height:58px; text-align:left; font-size:22px;
+    font-weight:700; border-radius:10px; padding:12px 16px;
     background:#1b3555; color:#f5f9ff; border:1px solid #345477;
 }
 [data-testid="stSidebar"] .stButton > button:hover {

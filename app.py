@@ -1,7 +1,8 @@
 import io
 import os
-from collections import Counter, defaultdict
+from collections import Counter
 
+import gdown
 import joblib
 import pandas as pd
 import streamlit as st
@@ -24,15 +25,32 @@ st.caption("PCAP traffic analysis • ML-based detection • SOC-style explanati
 MAX_PACKETS_TO_READ = 10000
 MAX_PACKET_LINES_FOR_LLM = 30
 MAX_CONTEXT_CHARS_FOR_LLM = 5000
-MODEL_PATH = "model.joblib"
+
+MODEL_PATH = "/tmp/model_bundle.joblib"
+GOOGLE_DRIVE_FILE_ID = "1QSBGKdxnXwX1gzG1n_EO6rMAznARfDpy"
 
 
-# -------------------- Load ML model --------------------
+# -------------------- Load ML model from Google Drive --------------------
 
 @st.cache_resource
-def load_model(path):
-    """Load either a saved sklearn pipeline or a bundle containing one."""
-    loaded = joblib.load(path)
+def load_model():
+    """Download the model from Drive if needed, then load its model bundle."""
+    if not os.path.exists(MODEL_PATH):
+        url = f"https://drive.google.com/uc?id={GOOGLE_DRIVE_FILE_ID}"
+        downloaded_path = gdown.download(
+            url,
+            output=MODEL_PATH,
+            quiet=False,
+            fuzzy=True,
+        )
+
+        if not downloaded_path or not os.path.exists(MODEL_PATH):
+            raise RuntimeError(
+                "Could not download the model from Google Drive. "
+                "Check that the file is shared as 'Anyone with the link — Viewer'."
+            )
+
+    loaded = joblib.load(MODEL_PATH)
 
     if isinstance(loaded, dict):
         model = loaded.get("pipeline") or loaded.get("model")
@@ -40,13 +58,12 @@ def load_model(path):
         label_map = loaded.get("label_map", {})
     else:
         model = loaded
-        feature_columns = getattr(model, "feature_names_in_", None)
+        feature_columns = getattr(loaded, "feature_names_in_", None)
         label_map = {}
 
     if model is None:
         raise ValueError(
-            "model.joblib must contain a model, or a dictionary with "
-            "'pipeline' or 'model'."
+            "The saved bundle must contain a model under 'pipeline' or 'model'."
         )
 
     if feature_columns is None:
@@ -54,8 +71,8 @@ def load_model(path):
 
     if feature_columns is None:
         raise ValueError(
-            "Could not find the model's feature columns. Save them in the "
-            "joblib bundle as 'feature_columns'."
+            "The model's expected feature columns were not found. "
+            "Save them in the bundle as 'feature_columns'."
         )
 
     return model, list(feature_columns), label_map
@@ -66,19 +83,15 @@ def load_model(path):
 def packet_ip_pair(packet):
     if IP in packet:
         return packet[IP].src, packet[IP].dst, packet[IP].ttl, packet[IP].ttl
+
     if IPv6 in packet:
         return packet[IPv6].src, packet[IPv6].dst, 0, 0
+
     return None
 
 
 def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
-    """
-    Build bidirectional flow records and packet context.
-
-    Features that cannot be derived from this PCAP extractor are left at
-    zero when preparing model input. Treat resulting predictions as
-    experimental unless the model was trained on this same feature set.
-    """
+    """Extract packet details and aggregate them into bidirectional flows."""
     flows = {}
     packet_lines = []
     protocol_counts = Counter()
@@ -122,18 +135,13 @@ def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
 
                 protocol_counts[protocol] += 1
 
-                # Canonical key groups both directions into one flow.
                 endpoint_a = (src_ip, src_port)
                 endpoint_b = (dst_ip, dst_port)
-                key = (
-                    endpoint_a,
-                    endpoint_b,
-                    protocol,
-                ) if endpoint_a <= endpoint_b else (
-                    endpoint_b,
-                    endpoint_a,
-                    protocol,
-                )
+
+                if endpoint_a <= endpoint_b:
+                    key = (endpoint_a, endpoint_b, protocol)
+                else:
+                    key = (endpoint_b, endpoint_a, protocol)
 
                 if key not in flows:
                     flows[key] = {
@@ -159,7 +167,6 @@ def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
                         "backward_window": 0,
                         "forward_seq": tcp_seq,
                         "backward_seq": 0,
-                        "tcp_rtt": 0.0,
                     }
 
                 flow = flows[key]
@@ -178,6 +185,7 @@ def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
                     flow["backward_packets"] += 1
                     flow["backward_bytes"] += packet_size
                     flow["backward_times"].append(timestamp)
+
                     if TCP in packet:
                         flow["backward_window"] = tcp_window
                         flow["backward_seq"] = tcp_seq
@@ -198,9 +206,7 @@ def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
                 if DNS in packet and packet[DNS].qd and DNSQR in packet:
                     dns_query = packet[DNSQR].qname
                     if isinstance(dns_query, bytes):
-                        dns_query = dns_query.decode(
-                            "utf-8", errors="replace"
-                        )
+                        dns_query = dns_query.decode("utf-8", errors="replace")
                     line += f", DNS_query={dns_query}"
 
                 packet_lines.append(line)
@@ -218,17 +224,21 @@ def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
         backward_bytes = flow["backward_bytes"]
 
         forward_intervals = [
-            b - a for a, b in zip(
-                flow["forward_times"], flow["forward_times"][1:]
+            b - a
+            for a, b in zip(
+                flow["forward_times"],
+                flow["forward_times"][1:],
             )
         ]
         backward_intervals = [
-            b - a for a, b in zip(
-                flow["backward_times"], flow["backward_times"][1:]
+            b - a
+            for a, b in zip(
+                flow["backward_times"],
+                flow["backward_times"][1:],
             )
         ]
 
-        row = {
+        flow_rows.append({
             "src_ip": flow["src_ip"],
             "dst_ip": flow["dst_ip"],
             "src_port": flow["src_port"],
@@ -239,12 +249,18 @@ def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
             "dpkts": backward_count,
             "sbytes": forward_bytes,
             "dbytes": backward_bytes,
-            "rate": (forward_count + backward_count) / duration
-            if duration > 0 else 0,
-            "sinpkt": sum(forward_intervals) / len(forward_intervals)
-            if forward_intervals else 0,
-            "dinpkt": sum(backward_intervals) / len(backward_intervals)
-            if backward_intervals else 0,
+            "rate": (
+                (forward_count + backward_count) / duration
+                if duration > 0 else 0
+            ),
+            "sinpkt": (
+                sum(forward_intervals) / len(forward_intervals)
+                if forward_intervals else 0
+            ),
+            "dinpkt": (
+                sum(backward_intervals) / len(backward_intervals)
+                if backward_intervals else 0
+            ),
             "sttl": flow["forward_ttl"],
             "dttl": flow["backward_ttl"],
             "sload": forward_bytes / duration if duration > 0 else 0,
@@ -255,20 +271,21 @@ def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
             "dwin": flow["backward_window"],
             "stcpb": flow["forward_seq"],
             "dtcpb": flow["backward_seq"],
-            "tcprtt": flow["tcp_rtt"],
+            "tcprtt": 0,
             "synack": 0,
             "ackdat": 0,
             "smean": forward_bytes / forward_count if forward_count else 0,
             "dmean": backward_bytes / backward_count if backward_count else 0,
             "state": "CON" if flow["proto"] == "TCP" else "INT",
-            "service": "dns" if 53 in (
-                flow["src_port"], flow["dst_port"]
-            ) else "-",
+            "service": (
+                "dns"
+                if 53 in (flow["src_port"], flow["dst_port"])
+                else "-"
+            ),
             "tcp_syn_count": flow["syn"],
             "tcp_fin_count": flow["fin"],
             "tcp_rst_count": flow["rst"],
-        }
-        flow_rows.append(row)
+        })
 
     summary_lines = [
         f"Packets analyzed: {len(packet_lines)}",
@@ -289,14 +306,16 @@ def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
         ]
     )[:MAX_CONTEXT_CHARS_FOR_LLM]
 
+    full_context = "\n".join(
+        summary_lines + ["", "Packet details:"] + packet_lines
+    )
+
     return {
         "packet_count": len(packet_lines),
         "protocol_counts": protocol_counts,
         "packet_lines": packet_lines,
         "flow_rows": flow_rows,
-        "full_context": "\n".join(
-            summary_lines + ["", "Packet details:"] + packet_lines
-        ),
+        "full_context": full_context,
         "llm_context": llm_context,
     }
 
@@ -309,16 +328,17 @@ def predict_flows(flow_rows, model, feature_columns, label_map):
 
     raw_features = pd.DataFrame(flow_rows)
 
-    # Add missing expected columns and preserve the training column order.
+    # Align to the exact feature names and order used during training.
     model_features = raw_features.reindex(
         columns=feature_columns,
         fill_value=0,
     )
 
-    # Replace any invalid numeric values before prediction.
-    model_features = model_features.replace(
-        [float("inf"), float("-inf")], 0
-    ).fillna(0)
+    model_features = (
+        model_features
+        .replace([float("inf"), float("-inf")], 0)
+        .fillna(0)
+    )
 
     predictions = model.predict(model_features)
 
@@ -361,11 +381,11 @@ if uploaded_file is not None:
                 st.error(str(exc))
                 st.stop()
 
-        st.subheader("Traffic Summary")
         col1, col2 = st.columns(2)
         col1.metric("Packets analyzed", result["packet_count"])
         col2.metric("Flows extracted", len(result["flow_rows"]))
 
+        st.subheader("Traffic Summary")
         if result["protocol_counts"]:
             st.write(
                 "Protocol counts: "
@@ -376,11 +396,15 @@ if uploaded_file is not None:
             )
 
         with st.expander("Extracted flow features"):
-            st.dataframe(pd.DataFrame(result["flow_rows"]), use_container_width=True)
+            st.dataframe(
+                pd.DataFrame(result["flow_rows"]),
+                use_container_width=True,
+            )
 
         st.subheader("ML Detection")
+
         try:
-            model, feature_columns, label_map = load_model(MODEL_PATH)
+            model, feature_columns, label_map = load_model()
             predictions, model_input = predict_flows(
                 result["flow_rows"],
                 model,
@@ -394,38 +418,35 @@ if uploaded_file is not None:
                 st.dataframe(predictions, use_container_width=True)
 
             st.caption(
-                "Experimental output: confirm that the PCAP extractor produces "
-                "the same features and preprocessing used to train the model."
+                "Experimental output: confirm that the extracted features "
+                "and preprocessing match the model's training setup."
             )
 
-            with st.expander("Exact feature table passed to model.joblib"):
+            with st.expander("Exact feature table passed to model"):
                 st.dataframe(model_input, use_container_width=True)
 
         except Exception as exc:
-            st.error(f"Could not run model.joblib: {exc}")
+            st.error(f"Could not load or run the model: {exc}")
             st.info(
-                "Check that model.joblib is in the same folder as app.py, "
-                "and that it contains the trained model plus its feature columns."
+                "Confirm that the Drive file is shared as "
+                "'Anyone with the link — Viewer' and that the saved bundle "
+                "contains the model and its feature columns."
             )
             predictions = pd.DataFrame()
 
         ml_context = (
-            "ML flow predictions:\n"
-            + predictions.to_string(index=False)
+            "ML flow predictions:\n" + predictions.to_string(index=False)
             if not predictions.empty
             else "ML prediction was not available."
         )
 
         st.subheader("SOC Analysis")
+
         with st.spinner("Generating SOC analysis..."):
             answer = explain_answer(
                 query=question.strip()
                 or "Summarize this traffic and identify anything suspicious.",
-                base_answer=(
-                    result["llm_context"]
-                    + "\n\n"
-                    + ml_context
-                ),
+                base_answer=result["llm_context"] + "\n\n" + ml_context,
             )
 
         if answer.startswith("LLM_ERROR:"):

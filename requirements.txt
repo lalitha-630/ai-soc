@@ -5,4 +5,4 @@ pypdf
 faiss-cpu
 sentence-transformers
 numpy
-python-evtx
+scikit-learn

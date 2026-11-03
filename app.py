@@ -1,593 +1,409 @@
 import io
 import os
 from collections import Counter
+from xml.sax.saxutils import escape
 
 import gdown
 import joblib
 import pandas as pd
 import streamlit as st
+from pypdf import PdfReader
 from scapy.all import PcapReader, IP, IPv6, TCP, UDP, DNS, DNSQR
-
 from llm import explain_answer
 
+st.set_page_config(page_title="AI-SOC Threat Analyzer", page_icon="🛡️", layout="wide")
 
-# -------------------- Page setup and styling --------------------
+st.markdown("""
+<style>
+.stApp{background:#0b1220;color:#e5e7eb}
+[data-testid="stSidebar"]{background:#111c30;border-right:1px solid #263750}
+[data-testid="stSidebar"] *{color:#e5e7eb}
+h1,h2,h3{color:#f8fafc}
+.stButton>button,.stDownloadButton>button{width:100%;background:#1e3a5f;color:white;border:1px solid #345477;border-radius:8px}
+[data-testid="stMetric"]{background:#17243a;border:1px solid #263750;padding:14px;border-radius:12px}
+</style>
+""", unsafe_allow_html=True)
 
-st.set_page_config(
-    page_title="AI-SOC Threat Analyzer",
-    page_icon="🛡️",
-    layout="wide",
-)
-
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background: #0b1220;
-        color: #e5e7eb;
-    }
-    [data-testid="stSidebar"] {
-        background: #111c30;
-        border-right: 1px solid #263750;
-    }
-    [data-testid="stSidebar"] * {
-        color: #e5e7eb;
-    }
-    h1, h2, h3 {
-        color: #f8fafc;
-    }
-    [data-testid="stFileUploader"],
-    [data-testid="stTextInput"] input,
-    [data-testid="stTextArea"] textarea {
-        background: #17243a;
-        color: #e5e7eb;
-    }
-    .stButton > button {
-        width: 100%;
-        background: #1e3a5f;
-        color: white;
-        border: 1px solid #345477;
-        border-radius: 8px;
-    }
-    .stButton > button:hover {
-        background: #28517f;
-        color: white;
-        border-color: #6d9acb;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-MAX_PACKETS_TO_READ = 10000
-MAX_PACKET_LINES_FOR_LLM = 30
-MAX_CONTEXT_CHARS_FOR_LLM = 5000
-
+MAX_PACKETS = 10000
 MODEL_PATH = "/tmp/model_bundle.joblib"
-GOOGLE_DRIVE_FILE_ID = "1QSBGKdxnXwX1gzG1n_EO6rMAznARfDpy"
+DRIVE_ID = "1QSBGKdxnXwX1gzG1n_EO6rMAznARfDpy"
+PAGES = ["Dashboard", "ML Findings", "AI Analyst", "Statistics", "View PCAP File", "Flows", "About"]
 
-
-# -------------------- Sidebar navigation --------------------
-
-if "page" not in st.session_state:
-    st.session_state.page = "ML findings"
+defaults = {
+    "page": "Dashboard", "pcap_context": "", "ml_context": "",
+    "flow_rows": [], "packet_lines": [], "protocol_counts": {},
+    "packet_count": 0, "pcap_filename": "", "predictions": None,
+    "model_input": None, "pcap_analyzed": False, "ai_answer": ""
+}
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
 with st.sidebar:
-    st.title("AI-SOC")
+    st.title("🛡️ AI-SOC")
     st.caption("Threat Analyzer")
     st.divider()
+    for page in PAGES:
+        if st.button(page, key=f"nav_{page}", type="primary" if st.session_state.page == page else "secondary"):
+            st.session_state.page = page
+            st.rerun()
 
-    if st.button("ML findings", key="nav_ml"):
-        st.session_state.page = "ML findings"
-
-    if st.button("RAG investigation", key="nav_rag"):
-        st.session_state.page = "RAG investigation"
-
-    if st.button("About", key="nav_about"):
-        st.session_state.page = "About"
-
-
-# -------------------- Load ML model from Google Drive --------------------
 
 @st.cache_resource
 def load_model():
-    """Download the model from Drive if needed, then load the model bundle."""
     if not os.path.exists(MODEL_PATH):
-        url = f"https://drive.google.com/uc?id={GOOGLE_DRIVE_FILE_ID}"
-
-        # Do not add fuzzy=True; some gdown versions do not support it.
-        downloaded_path = gdown.download(
-            url,
-            output=MODEL_PATH,
-            quiet=False,
-        )
-
-        if not downloaded_path or not os.path.exists(MODEL_PATH):
-            raise RuntimeError(
-                "Could not download the model from Google Drive. "
-                "Check that the file is shared as 'Anyone with the link — Viewer'."
-            )
-
+        url = f"https://drive.google.com/uc?id={DRIVE_ID}"
+        path = gdown.download(url, output=MODEL_PATH, quiet=False)
+        if not path or not os.path.exists(MODEL_PATH):
+            raise RuntimeError("Model download failed. Check Drive link sharing.")
     loaded = joblib.load(MODEL_PATH)
-
     if isinstance(loaded, dict):
         model = loaded.get("pipeline") or loaded.get("model")
-        feature_columns = loaded.get("feature_columns")
+        columns = loaded.get("feature_columns")
         label_map = loaded.get("label_map", {})
     else:
         model = loaded
-        feature_columns = getattr(loaded, "feature_names_in_", None)
+        columns = getattr(model, "feature_names_in_", None)
         label_map = {}
-
     if model is None:
-        raise ValueError(
-            "The saved bundle must contain a model under 'pipeline' or 'model'."
-        )
+        raise ValueError("Model bundle must contain 'pipeline' or 'model'.")
+    if columns is None:
+        columns = getattr(model, "feature_names_in_", None)
+    if columns is None:
+        raise ValueError("Model feature columns were not found in the bundle.")
+    return model, list(columns), label_map
 
-    if feature_columns is None:
-        feature_columns = getattr(model, "feature_names_in_", None)
-
-    if feature_columns is None:
-        raise ValueError(
-            "The model's expected feature columns were not found. "
-            "Save them in the bundle as 'feature_columns'."
-        )
-
-    return model, list(feature_columns), label_map
-
-
-# -------------------- PCAP feature extraction --------------------
 
 def packet_ip_pair(packet):
     if IP in packet:
         return packet[IP].src, packet[IP].dst, packet[IP].ttl, packet[IP].ttl
-
     if IPv6 in packet:
         return packet[IPv6].src, packet[IPv6].dst, 0, 0
-
     return None
 
 
-def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS_TO_READ):
-    """Extract packet details and aggregate them into bidirectional flows."""
-    flows = {}
-    packet_lines = []
-    protocol_counts = Counter()
-    packet_count = 0
-
-    file_bytes = io.BytesIO(uploaded_file.getvalue())
-
-    try:
-        with PcapReader(file_bytes) as reader:
-            for packet in reader:
-                packet_count += 1
-                if packet_count > max_packets:
+def extract_pcap_context(uploaded_file, max_packets=MAX_PACKETS):
+    flows, packet_lines = {}, []
+    protocols = Counter()
+    with PcapReader(io.BytesIO(uploaded_file.getvalue())) as reader:
+        try:
+            for index, packet in enumerate(reader, start=1):
+                if index > max_packets:
                     break
-
                 pair = packet_ip_pair(packet)
                 if not pair:
                     continue
-
-                src_ip, dst_ip, src_ttl, dst_ttl = pair
-                timestamp = float(packet.time)
-                packet_size = len(packet)
-
-                protocol = "OTHER"
-                src_port = 0
-                dst_port = 0
-                tcp_flags = ""
-                tcp_seq = 0
-                tcp_window = 0
-
+                src, dst, src_ttl, dst_ttl = pair
+                proto, sport, dport, flags, seq, window = "OTHER", 0, 0, "", 0, 0
                 if TCP in packet:
-                    protocol = "TCP"
-                    src_port = int(packet[TCP].sport)
-                    dst_port = int(packet[TCP].dport)
-                    tcp_flags = str(packet[TCP].flags)
-                    tcp_seq = int(packet[TCP].seq)
-                    tcp_window = int(packet[TCP].window)
+                    proto = "TCP"
+                    sport, dport = int(packet[TCP].sport), int(packet[TCP].dport)
+                    flags, seq, window = str(packet[TCP].flags), int(packet[TCP].seq), int(packet[TCP].window)
                 elif UDP in packet:
-                    protocol = "UDP"
-                    src_port = int(packet[UDP].sport)
-                    dst_port = int(packet[UDP].dport)
-
-                protocol_counts[protocol] += 1
-
-                endpoint_a = (src_ip, src_port)
-                endpoint_b = (dst_ip, dst_port)
-
-                if endpoint_a <= endpoint_b:
-                    key = (endpoint_a, endpoint_b, protocol)
-                else:
-                    key = (endpoint_b, endpoint_a, protocol)
-
+                    proto = "UDP"
+                    sport, dport = int(packet[UDP].sport), int(packet[UDP].dport)
+                protocols[proto] += 1
+                a, b = (src, sport), (dst, dport)
+                key = (a, b, proto) if a <= b else (b, a, proto)
                 if key not in flows:
-                    flows[key] = {
-                        "src_ip": src_ip,
-                        "dst_ip": dst_ip,
-                        "src_port": src_port,
-                        "dst_port": dst_port,
-                        "proto": protocol,
-                        "start": timestamp,
-                        "end": timestamp,
-                        "forward_packets": 0,
-                        "backward_packets": 0,
-                        "forward_bytes": 0,
-                        "backward_bytes": 0,
-                        "forward_times": [],
-                        "backward_times": [],
-                        "forward_ttl": src_ttl,
-                        "backward_ttl": dst_ttl,
-                        "syn": 0,
-                        "fin": 0,
-                        "rst": 0,
-                        "forward_window": tcp_window,
-                        "backward_window": 0,
-                        "forward_seq": tcp_seq,
-                        "backward_seq": 0,
-                    }
-
-                flow = flows[key]
-                is_forward = (
-                    src_ip == flow["src_ip"]
-                    and src_port == flow["src_port"]
-                )
-
-                flow["end"] = timestamp
-
-                if is_forward:
-                    flow["forward_packets"] += 1
-                    flow["forward_bytes"] += packet_size
-                    flow["forward_times"].append(timestamp)
-                else:
-                    flow["backward_packets"] += 1
-                    flow["backward_bytes"] += packet_size
-                    flow["backward_times"].append(timestamp)
-
-                    if TCP in packet:
-                        flow["backward_window"] = tcp_window
-                        flow["backward_seq"] = tcp_seq
-
-                if "S" in tcp_flags:
-                    flow["syn"] += 1
-                if "F" in tcp_flags:
-                    flow["fin"] += 1
-                if "R" in tcp_flags:
-                    flow["rst"] += 1
-
-                line = (
-                    f"Packet {packet_count}: {src_ip}:{src_port} → "
-                    f"{dst_ip}:{dst_port}, protocol={protocol}, "
-                    f"length={packet_size}, TCP_flags={tcp_flags or '-'}"
-                )
-
+                    flows[key] = dict(src_ip=src, dst_ip=dst, src_port=sport, dst_port=dport,
+                        proto=proto, start=float(packet.time), end=float(packet.time),
+                        forward_packets=0, backward_packets=0, forward_bytes=0, backward_bytes=0,
+                        forward_times=[], backward_times=[], forward_ttl=src_ttl, backward_ttl=dst_ttl,
+                        syn=0, fin=0, rst=0, forward_window=window, backward_window=0,
+                        forward_seq=seq, backward_seq=0)
+                f = flows[key]
+                forward = src == f["src_ip"] and sport == f["src_port"]
+                f["end"] = float(packet.time)
+                direction = "forward" if forward else "backward"
+                f[f"{direction}_packets"] += 1
+                f[f"{direction}_bytes"] += len(packet)
+                f[f"{direction}_times"].append(float(packet.time))
+                if not forward and TCP in packet:
+                    f["backward_window"], f["backward_seq"] = window, seq
+                f["syn"] += int("S" in flags)
+                f["fin"] += int("F" in flags)
+                f["rst"] += int("R" in flags)
+                line = f"Packet {index}: {src}:{sport} -> {dst}:{dport}, protocol={proto}, length={len(packet)}, TCP_flags={flags or '-'}"
                 if DNS in packet and packet[DNS].qd and DNSQR in packet:
-                    dns_query = packet[DNSQR].qname
-                    if isinstance(dns_query, bytes):
-                        dns_query = dns_query.decode("utf-8", errors="replace")
-                    line += f", DNS_query={dns_query}"
-
+                    qname = packet[DNSQR].qname
+                    if isinstance(qname, bytes):
+                        qname = qname.decode("utf-8", errors="replace")
+                    line += f", DNS_query={qname}"
                 packet_lines.append(line)
+        except Exception as exc:
+            raise ValueError(f"Could not read this PCAP file: {exc}") from exc
 
-    except Exception as exc:
-        raise ValueError(f"Could not read this PCAP file: {exc}") from exc
-
-    flow_rows = []
-
-    for flow in flows.values():
-        duration = max(flow["end"] - flow["start"], 0.0)
-        forward_count = flow["forward_packets"]
-        backward_count = flow["backward_packets"]
-        forward_bytes = flow["forward_bytes"]
-        backward_bytes = flow["backward_bytes"]
-
-        forward_intervals = [
-            b - a
-            for a, b in zip(
-                flow["forward_times"],
-                flow["forward_times"][1:],
-            )
-        ]
-        backward_intervals = [
-            b - a
-            for a, b in zip(
-                flow["backward_times"],
-                flow["backward_times"][1:],
-            )
-        ]
-
-        flow_rows.append({
-            "src_ip": flow["src_ip"],
-            "dst_ip": flow["dst_ip"],
-            "src_port": flow["src_port"],
-            "dst_port": flow["dst_port"],
-            "proto": flow["proto"],
-            "dur": duration,
-            "spkts": forward_count,
-            "dpkts": backward_count,
-            "sbytes": forward_bytes,
-            "dbytes": backward_bytes,
-            "rate": (
-                (forward_count + backward_count) / duration
-                if duration > 0 else 0
-            ),
-            "sinpkt": (
-                sum(forward_intervals) / len(forward_intervals)
-                if forward_intervals else 0
-            ),
-            "dinpkt": (
-                sum(backward_intervals) / len(backward_intervals)
-                if backward_intervals else 0
-            ),
-            "sttl": flow["forward_ttl"],
-            "dttl": flow["backward_ttl"],
-            "sload": forward_bytes / duration if duration > 0 else 0,
-            "dload": backward_bytes / duration if duration > 0 else 0,
-            "sloss": 0,
-            "dloss": 0,
-            "swin": flow["forward_window"],
-            "dwin": flow["backward_window"],
-            "stcpb": flow["forward_seq"],
-            "dtcpb": flow["backward_seq"],
-            "tcprtt": 0,
-            "synack": 0,
-            "ackdat": 0,
-            "smean": forward_bytes / forward_count if forward_count else 0,
-            "dmean": backward_bytes / backward_count if backward_count else 0,
-            "state": "CON" if flow["proto"] == "TCP" else "INT",
-            "service": (
-                "dns"
-                if 53 in (flow["src_port"], flow["dst_port"])
-                else "-"
-            ),
-            "tcp_syn_count": flow["syn"],
-            "tcp_fin_count": flow["fin"],
-            "tcp_rst_count": flow["rst"],
+    rows = []
+    for f in flows.values():
+        duration = max(f["end"] - f["start"], 0)
+        fc, bc = f["forward_packets"], f["backward_packets"]
+        fb, bb = f["forward_bytes"], f["backward_bytes"]
+        fi = [y-x for x, y in zip(f["forward_times"], f["forward_times"][1:])]
+        bi = [y-x for x, y in zip(f["backward_times"], f["backward_times"][1:])]
+        rows.append({
+            "src_ip": f["src_ip"], "dst_ip": f["dst_ip"], "src_port": f["src_port"],
+            "dst_port": f["dst_port"], "proto": f["proto"], "dur": duration,
+            "spkts": fc, "dpkts": bc, "sbytes": fb, "dbytes": bb,
+            "rate": (fc+bc)/duration if duration else 0,
+            "sinpkt": sum(fi)/len(fi) if fi else 0, "dinpkt": sum(bi)/len(bi) if bi else 0,
+            "sttl": f["forward_ttl"], "dttl": f["backward_ttl"],
+            "sload": fb/duration if duration else 0, "dload": bb/duration if duration else 0,
+            "sloss": 0, "dloss": 0, "swin": f["forward_window"], "dwin": f["backward_window"],
+            "stcpb": f["forward_seq"], "dtcpb": f["backward_seq"], "tcprtt": 0,
+            "synack": 0, "ackdat": 0, "smean": fb/fc if fc else 0, "dmean": bb/bc if bc else 0,
+            "state": "CON" if f["proto"] == "TCP" else "INT",
+            "service": "dns" if 53 in (f["src_port"], f["dst_port"]) else "-",
+            "tcp_syn_count": f["syn"], "tcp_fin_count": f["fin"], "tcp_rst_count": f["rst"]
         })
-
-    summary_lines = [
-        f"Packets analyzed: {len(packet_lines)}",
-        f"Flows extracted: {len(flow_rows)}",
-        "Protocol counts: "
-        + ", ".join(
-            f"{protocol}={count}"
-            for protocol, count in protocol_counts.most_common()
-        ),
-    ]
-
-    llm_context = "\n".join(
-        summary_lines
-        + [
-            "",
-            "Sample packet details:",
-            *packet_lines[:MAX_PACKET_LINES_FOR_LLM],
-        ]
-    )[:MAX_CONTEXT_CHARS_FOR_LLM]
-
-    return {
-        "packet_count": len(packet_lines),
-        "protocol_counts": protocol_counts,
-        "packet_lines": packet_lines,
-        "flow_rows": flow_rows,
-        "llm_context": llm_context,
-    }
+    context = "\n".join([
+        f"Packets analyzed: {len(packet_lines)}", f"Flows extracted: {len(rows)}",
+        "Protocol counts: " + ", ".join(f"{p}={n}" for p, n in protocols.most_common()),
+        "", "Sample packet details:", *packet_lines[:30]
+    ])[:5000]
+    return dict(packet_count=len(packet_lines), protocol_counts=protocols,
+                packet_lines=packet_lines, flow_rows=rows, llm_context=context)
 
 
-# -------------------- ML prediction --------------------
-
-def predict_flows(flow_rows, model, feature_columns, label_map):
-    if not flow_rows:
+def predict_flows(rows, model, columns, label_map):
+    if not rows:
         return pd.DataFrame(), pd.DataFrame()
-
-    raw_features = pd.DataFrame(flow_rows)
-
-    model_features = raw_features.reindex(
-        columns=feature_columns,
-        fill_value=0,
-    )
-
-    model_features = (
-        model_features
-        .replace([float("inf"), float("-inf")], 0)
-        .fillna(0)
-    )
-
-    predictions = model.predict(model_features)
-
-    results = raw_features[
-        ["src_ip", "src_port", "dst_ip", "dst_port", "proto"]
-    ].copy()
-
-    results["ML prediction"] = [
-        label_map.get(str(pred), label_map.get(pred, str(pred)))
-        for pred in predictions
-    ]
-
+    raw = pd.DataFrame(rows)
+    features = raw.reindex(columns=columns, fill_value=0).replace([float("inf"), float("-inf")], 0).fillna(0)
+    preds = model.predict(features)
+    result = raw[["src_ip", "src_port", "dst_ip", "dst_port", "proto"]].copy()
+    result["ML prediction"] = [label_map.get(str(p), label_map.get(p, str(p))) for p in preds]
     if hasattr(model, "predict_proba"):
-        probabilities = model.predict_proba(model_features)
-        results["Confidence"] = probabilities.max(axis=1).round(3)
-
-    return results, model_features
+        result["Confidence"] = model.predict_proba(features).max(axis=1).round(3)
+    return result, features
 
 
-# -------------------- ML findings page --------------------
+def severity(label):
+    text = str(label).lower()
+    if any(x in text for x in ("malicious", "attack", "intrusion", "botnet", "critical")):
+        return "High"
+    if any(x in text for x in ("suspicious", "anomaly", "scan")):
+        return "Medium"
+    if any(x in text for x in ("normal", "benign")):
+        return "Low"
+    return "Review"
 
-if st.session_state.page == "ML findings":
-    st.title("ML Findings")
-    st.caption("Upload a PCAP to extract traffic flows and run the ML model.")
 
-    uploaded_file = st.file_uploader(
-        "Upload a PCAP or PCAPNG file",
-        type=["pcap", "pcapng"],
-        key="ml_pcap_upload",
-    )
+def make_findings_pdf(summary, findings):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=28, leftMargin=28, topMargin=28, bottomMargin=28)
+    styles = getSampleStyleSheet()
+    story = [Paragraph("AI-SOC Threat Analyzer — ML Findings", styles["Title"]),
+             Spacer(1, 10), Paragraph("PCAP Summary", styles["Heading2"]),
+             Paragraph(escape(summary).replace("\n", "<br/>"), styles["BodyText"]),
+             Spacer(1, 12), Paragraph("ML Predictions", styles["Heading2"])]
+    if findings is None or findings.empty:
+        story.append(Paragraph("No ML predictions available.", styles["BodyText"]))
+    else:
+        data = [list(findings.columns)] + findings.fillna("").astype(str).values.tolist()
+        table = Table(data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1E3A5F")),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+            ("GRID", (0,0), (-1,-1), 0.35, colors.grey),
+            ("FONTSIZE", (0,0), (-1,-1), 7), ("VALIGN", (0,0), (-1,-1), "TOP")
+        ]))
+        story.append(table)
+    doc.build(story)
+    return buffer.getvalue()
 
-    if uploaded_file is not None:
-        st.write(f"Selected file: **{uploaded_file.name}**")
 
-        if st.button("Analyze PCAP", type="primary", key="analyze_pcap"):
-            with st.spinner("Extracting packet and flow features..."):
-                try:
-                    result = extract_pcap_context(uploaded_file)
-                except ValueError as exc:
-                    st.error(str(exc))
-                    st.stop()
+# Dashboard
+if st.session_state.page == "Dashboard":
+    st.title("AI-SOC v3.0")
+    st.caption("Threat Analyzer")
+    preds = st.session_state.predictions
+    if preds is None:
+        preds = pd.DataFrame()
+    total_alerts = critical = 0
+    if not preds.empty:
+        labels = preds["ML prediction"].astype(str).str.lower()
+        total_alerts = int((~labels.str.contains("normal|benign", regex=True)).sum())
+        critical = int(labels.str.contains("critical|malicious|attack|intrusion").sum())
+    a, b, c = st.columns(3)
+    a.metric("Sessions", int(st.session_state.pcap_analyzed))
+    b.metric("Total Alerts", total_alerts)
+    c.metric("Critical", critical)
 
-            col1, col2 = st.columns(2)
-            col1.metric("Packets analyzed", result["packet_count"])
-            col2.metric("Flows extracted", len(result["flow_rows"]))
-
-            st.subheader("Traffic Summary")
-            if result["protocol_counts"]:
-                st.write(
-                    "Protocol counts: "
-                    + ", ".join(
-                        f"{protocol}: {count}"
-                        for protocol, count in result["protocol_counts"].most_common()
-                    )
-                )
-
-            with st.expander("Extracted flow features"):
-                st.dataframe(
-                    pd.DataFrame(result["flow_rows"]),
-                    use_container_width=True,
-                )
-
-            st.subheader("ML Detection")
-
+    st.subheader("Analyze Network Traffic")
+    capture = st.file_uploader("Select your PCAP or PCAPNG file", type=["pcap", "pcapng"], key="dashboard_pcap")
+    if capture:
+        st.write(f"Selected file: **{capture.name}**")
+        if st.button("🚀 Analyze Now", type="primary", key="analyze"):
             try:
-                model, feature_columns, label_map = load_model()
-                predictions, model_input = predict_flows(
-                    result["flow_rows"],
-                    model,
-                    feature_columns,
-                    label_map,
-                )
-
-                if predictions.empty:
-                    st.info("No IP-based flows were extracted from this file.")
-                else:
-                    st.dataframe(predictions, use_container_width=True)
-
-                st.caption(
-                    "Experimental output: verify that extracted features and "
-                    "preprocessing match the model's training setup."
-                )
-
-                with st.expander("Exact feature table passed to model"):
-                    st.dataframe(model_input, use_container_width=True)
-
-                st.session_state["pcap_context"] = result["llm_context"]
-                st.session_state["ml_context"] = (
-                    "ML flow predictions:\n" + predictions.to_string(index=False)
-                    if not predictions.empty
-                    else "ML prediction was not available."
-                )
-
+                with st.spinner("Analyzing packets and flows..."):
+                    result = extract_pcap_context(capture)
+                    model, cols, labels = load_model()
+                    findings, model_input = predict_flows(result["flow_rows"], model, cols, labels)
+                st.session_state.pcap_context = result["llm_context"]
+                st.session_state.ml_context = "ML flow predictions:\n" + findings.to_string(index=False)
+                st.session_state.flow_rows = result["flow_rows"]
+                st.session_state.packet_lines = result["packet_lines"]
+                st.session_state.protocol_counts = dict(result["protocol_counts"])
+                st.session_state.packet_count = result["packet_count"]
+                st.session_state.pcap_filename = capture.name
+                st.session_state.predictions = findings
+                st.session_state.model_input = model_input
+                st.session_state.pcap_analyzed = True
+                st.session_state.ai_answer = ""
+                st.success("Analysis complete. Open ML Findings to review the results.")
             except Exception as exc:
-                st.error(f"Could not load or run the model: {exc}")
-                st.info(
-                    "Check Drive sharing is 'Anyone with the link — Viewer' "
-                    "and that the saved bundle contains the model and feature columns."
-                )
-                st.session_state["pcap_context"] = result["llm_context"]
-                st.session_state["ml_context"] = "ML prediction was not available."
+                st.error(f"PCAP analysis failed: {exc}")
+    if st.session_state.pcap_analyzed:
+        x, y, z = st.columns(3)
+        x.metric("Packets analyzed", st.session_state.packet_count)
+        y.metric("Flows extracted", len(st.session_state.flow_rows))
+        z.metric("Protocols", len(st.session_state.protocol_counts))
+        if st.button("Open ML Findings"):
+            st.session_state.page = "ML Findings"
+            st.rerun()
 
 
-# -------------------- RAG investigation page --------------------
-
-elif st.session_state.page == "RAG investigation":
-    st.title("RAG Investigation")
-    st.caption("Ask a question about the analyzed PCAP and review the SOC-style explanation.")
-
-    default_question = (
-        "Summarize this traffic and identify anything suspicious."
-    )
-
-    question = st.text_area(
-        "Investigation question",
-        value=default_question,
-        height=100,
-    )
-
-    if st.button("Run investigation", type="primary", key="run_rag"):
-        pcap_context = st.session_state.get("pcap_context", "")
-        ml_context = st.session_state.get("ml_context", "")
-
-        if not pcap_context:
-            st.warning("Go to ML findings and analyze a PCAP first.")
+# ML Findings
+elif st.session_state.page == "ML Findings":
+    st.title("ML Findings")
+    if not st.session_state.pcap_analyzed:
+        st.info("Analyze a PCAP from Dashboard first.")
+    else:
+        st.caption(f"PCAP: {st.session_state.pcap_filename}")
+        findings = st.session_state.predictions
+        if findings is not None and not findings.empty:
+            shown = findings.copy()
+            shown["Severity"] = shown["ML prediction"].apply(severity)
+            st.dataframe(shown, use_container_width=True)
+            st.download_button("Download ML Findings as PDF",
+                data=make_findings_pdf(st.session_state.pcap_context, shown),
+                file_name="ai_soc_ml_findings.pdf", mime="application/pdf", type="primary")
         else:
-            with st.spinner("Generating SOC investigation..."):
-                answer = explain_answer(
-                    query=question.strip() or default_question,
-                    base_answer=pcap_context + "\n\n" + ml_context,
-                )
-
-            if answer.startswith("LLM_ERROR:"):
-                st.error(answer)
-                st.info(
-                    "Check GROQ_API_KEY in Streamlit Cloud Secrets and "
-                    "confirm the selected Groq model is available."
-                )
-            else:
-                st.markdown(answer)
+            st.warning("No flow predictions available.")
+        st.subheader("Traffic Summary")
+        st.write(st.session_state.protocol_counts)
+        with st.expander("Extracted flow features"):
+            st.dataframe(pd.DataFrame(st.session_state.flow_rows), use_container_width=True)
+        with st.expander("Model input features"):
+            if st.session_state.model_input is not None:
+                st.dataframe(st.session_state.model_input, use_container_width=True)
 
 
-# -------------------- About page --------------------
+# AI Analyst
+elif st.session_state.page == "AI Analyst":
+    st.title("AI Analyst")
+    st.caption("Upload the ML findings PDF and ask for an investigation.")
+    report = st.file_uploader("Upload ML findings PDF", type=["pdf"], key="findings_pdf")
+    question = st.text_area("Investigation question",
+        value="Summarize the findings and identify anything that needs investigation.", height=100)
+    if st.button("Investigate", type="primary", key="investigate"):
+        if report is None:
+            st.warning("Upload the ML findings PDF first.")
+        else:
+            try:
+                reader = PdfReader(io.BytesIO(report.getvalue()))
+                text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+                if not text:
+                    st.warning("No selectable text found. Upload a text-based PDF.")
+                else:
+                    context = "Uploaded ML findings PDF:\n" + text[:12000]
+                    if st.session_state.pcap_context:
+                        context += "\n\nPCAP context:\n" + st.session_state.pcap_context
+                    if st.session_state.ml_context:
+                        context += "\n\nML findings:\n" + st.session_state.ml_context
+                    with st.spinner("Investigating..."):
+                        st.session_state.ai_answer = explain_answer(
+                            query=question.strip() or "Summarize the findings.",
+                            base_answer=context)
+            except Exception as exc:
+                st.error(f"Could not process PDF: {exc}")
+    if st.session_state.ai_answer:
+        if st.session_state.ai_answer.startswith("LLM_ERROR:"):
+            st.error(st.session_state.ai_answer)
+        else:
+            st.subheader("Investigation result")
+            st.markdown(st.session_state.ai_answer)
 
+
+# Statistics
+elif st.session_state.page == "Statistics":
+    st.title("Statistics")
+    if not st.session_state.pcap_analyzed:
+        st.info("Analyze a PCAP from Dashboard first.")
+    else:
+        flows = pd.DataFrame(st.session_state.flow_rows)
+        a, b, c = st.columns(3)
+        a.metric("Packets", st.session_state.packet_count)
+        b.metric("Flows", len(flows))
+        c.metric("Total bytes", int(flows["sbytes"].sum() + flows["dbytes"].sum()) if not flows.empty else 0)
+        counts = st.session_state.protocol_counts
+        if counts:
+            st.subheader("Protocol distribution")
+            st.bar_chart(pd.DataFrame(list(counts.items()), columns=["Protocol", "Packets"]).set_index("Protocol"))
+        if not flows.empty:
+            st.subheader("Packets per flow")
+            packet_totals = (flows["spkts"] + flows["dpkts"]).head(20)
+            st.bar_chart(packet_totals)
+            st.subheader("Bytes per flow")
+            st.bar_chart(flows[["sbytes", "dbytes"]].head(20))
+
+
+# View PCAP File
+elif st.session_state.page == "View PCAP File":
+    st.title("View PCAP File")
+    if not st.session_state.pcap_analyzed:
+        st.info("Analyze a PCAP from Dashboard first.")
+    else:
+        st.write(f"File: **{st.session_state.pcap_filename}**")
+        st.metric("Packets analyzed", st.session_state.packet_count)
+        search = st.text_input("Search packet details")
+        packets = st.session_state.packet_lines
+        if search:
+            packets = [p for p in packets if search.lower() in p.lower()]
+        st.write(f"Showing {len(packets)} packet records")
+        st.dataframe(pd.DataFrame({"Packet details": packets}), use_container_width=True)
+
+
+# Flows
+elif st.session_state.page == "Flows":
+    st.title("Flows")
+    if not st.session_state.pcap_analyzed:
+        st.info("Analyze a PCAP from Dashboard first.")
+    else:
+        flows = pd.DataFrame(st.session_state.flow_rows)
+        search = st.text_input("Search flows")
+        if search and not flows.empty:
+            mask = flows.astype(str).apply(lambda col: col.str.contains(search, case=False, na=False)).any(axis=1)
+            flows = flows[mask]
+        st.write(f"Showing {len(flows)} flows")
+        st.dataframe(flows, use_container_width=True)
+
+
+# About
 elif st.session_state.page == "About":
     st.title("About AI-SOC Threat Analyzer")
-    st.caption("Project overview, dataset, ML model, and RAG workflow")
-
     st.subheader("Main features")
     st.markdown("""
-    - Upload PCAP/PCAPNG files for network traffic analysis.
-    - Extract packet details and aggregate traffic into flows.
-    - Use a trained ML model to classify network flows.
-    - Ask investigation questions and receive SOC-style explanations.
-    - Review traffic summaries, flow features, and model predictions.
+    - Analyze PCAP/PCAPNG traffic and extract network flows.
+    - Classify flows using the saved ML model.
+    - Download ML findings as a PDF and upload it to AI Analyst.
+    - Review PCAP details, flows, and traffic statistics.
     """)
-
     st.subheader("Dataset")
-    st.markdown("""
-    The ML model was trained using a labeled network-traffic dataset.
-
-    - **Dataset name:** [Enter dataset name]
-    - **Source:** [Enter dataset source or URL]
-    - **Rows/records:** [Enter number of rows]
-    - **Features:** [Enter number of input features]
-    - **Label column:** [Enter target/label column]
-    - **Labels/classes:** [Enter the classes, e.g. normal and attack categories]
-
-    The label column provides the target class used during model training.
-    The remaining selected columns are used as input features.
-    """)
-
+    st.write("Add your exact dataset name, source, row count, feature count, label column, and classes here.")
     st.subheader("Machine learning model")
+    st.write("The saved model bundle is loaded from Google Drive. Extracted feature names and preprocessing must match training.")
+    st.subheader("AI Analyst workflow")
     st.markdown("""
-    **Random Forest Classifier**
+    1. Analyze a PCAP and generate flow-level predictions.
+    2. Download the ML findings PDF.
+    3. Upload the PDF to AI Analyst and ask a question.
+    4. The PDF text and available PCAP context are sent to Groq for a SOC-style explanation.
 
-    Random Forest is an ensemble model that combines predictions from multiple
-    decision trees. It can learn patterns across the dataset’s traffic features
-    and classify a flow into one of the trained labels.
-
-    In this application, the saved model is loaded from Google Drive and applied
-    to features extracted from the uploaded PCAP. The extracted feature names
-    and preprocessing must match the training pipeline for predictions to be reliable.
-    """)
-
-    st.subheader("RAG implementation")
-    st.markdown("""
-    The Retrieval-Augmented Generation (RAG) component supports natural-language
-    investigation of the traffic analysis.
-
-    1. The application prepares context from the PCAP summary and available ML findings.
-    2. The RAG pipeline retrieves relevant information from its indexed knowledge
-       sources using embeddings and FAISS similarity search.
-    3. The retrieved information and investigation question are sent to the
-       Groq-hosted language model.
-    4. The model generates a SOC-style explanation grounded in the supplied context.
-
-    RAG provides explanations and investigation support; it does not independently
-    verify that an event is malicious.
+    This implementation passes extracted PDF text as context; it does not implement embedding-based PDF retrieval.
     """)

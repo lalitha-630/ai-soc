@@ -4,10 +4,8 @@ from groq import Groq
 
 
 MODEL_NAME = "openai/gpt-oss-20b"
-
-# Character caps keep oversized PDFs/findings from creating huge prompts.
 MAX_QUERY_CHARS = 1500
-MAX_EVIDENCE_CHARS = 12000
+MAX_EVIDENCE_CHARS = 5000
 
 
 def get_api_key():
@@ -17,7 +15,6 @@ def get_api_key():
     if not api_key:
         try:
             import streamlit as st
-
             api_key = st.secrets.get("GROQ_API_KEY")
         except Exception:
             api_key = None
@@ -48,7 +45,7 @@ def explain_answer(query: str, base_answer: str) -> str:
         response = client.chat.completions.create(
             model=MODEL_NAME,
             temperature=0.3,
-            max_tokens=700,
+            max_tokens=900,
             messages=[
                 {
                     "role": "system",
@@ -57,7 +54,8 @@ def explain_answer(query: str, base_answer: str) -> str:
                         "triage. Use only the supplied evidence. Do not claim "
                         "an attack is confirmed unless the evidence supports it. "
                         "Distinguish observations from hypotheses. If evidence "
-                        "is insufficient, say so. Keep the response concise."
+                        "is insufficient, say so. Keep the response under "
+                        "400 words and concise."
                     ),
                 },
                 {
@@ -70,7 +68,9 @@ def explain_answer(query: str, base_answer: str) -> str:
                         "2. Potential security concern, if supported\n"
                         "3. Risk level (Low, Medium, High, or Inconclusive) "
                         "and the reason\n"
-                        "4. Recommended investigation or response steps"
+                        "4. Recommended investigation or response steps\n\n"
+                        "Treat ML labels as predictions, not confirmed facts. "
+                        "Do not infer packet details that are not in the evidence."
                     ),
                 },
             ],
@@ -84,8 +84,8 @@ def explain_answer(query: str, base_answer: str) -> str:
             if finish_reason == "length":
                 return (
                     "The investigation response exceeded the model's output "
-                    "limit. Please retry with a more focused question or a "
-                    "smaller findings PDF."
+                    "limit. Retry with a more focused question or a smaller "
+                    "findings PDF."
                 )
 
             return (

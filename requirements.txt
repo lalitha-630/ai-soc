@@ -5,8 +5,8 @@ pypdf
 faiss-cpu
 sentence-transformers
 numpy
-scikit-learn
 scapy
 gdown
 joblib
 pandas
+scikit-learn==1.6.1

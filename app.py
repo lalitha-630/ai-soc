@@ -6,6 +6,7 @@ from xml.sax.saxutils import escape
 import gdown
 import joblib
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from pypdf import PdfReader
 from scapy.all import PcapReader, IP, IPv6, TCP, UDP, DNS, DNSQR
@@ -389,54 +390,135 @@ elif st.session_state.page == "Statistics":
         flows = pd.DataFrame(st.session_state.flow_rows)
         findings = st.session_state.predictions
         findings = findings.copy() if findings is not None else pd.DataFrame()
-        total_flows = len(flows)
-        total_packets = int(st.session_state.packet_count)
-        total_bytes = int(flows["sbytes"].sum() + flows["dbytes"].sum()) if not flows.empty else 0
-        suspicious = 0
-        if not findings.empty and "ML prediction" in findings:
-            labels = findings["ML prediction"].astype(str).str.lower()
-            suspicious = int(labels.str.contains("attack|malicious|intrusion|botnet|suspicious|anomaly|scan", regex=True).sum())
-        safe_or_other = max(total_flows - suspicious, 0)
-        suspicious_pct = 100 * suspicious / total_flows if total_flows else 0
-        high = int(findings["ML prediction"].apply(lambda x: severity(x) == "High").sum()) if not findings.empty and "ML prediction" in findings else 0
+        navy, blue, pale, line = "#07172b", "#5da8f5", "#9cc9ff", "#315578"
+        chart_config = {"displayModeBar": True, "displaylogo": False, "responsive": True}
 
-        st.caption(f"Capture: {st.session_state.pcap_filename} · {total_packets:,} packets processed")
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Total flows", f"{total_flows:,}")
-        k2.metric("Suspicious flows", f"{suspicious:,}", f"{suspicious_pct:.1f}% of flows")
-        k3.metric("High-severity findings", f"{high:,}")
-        k4, k5, k6 = st.columns(3)
-        k4.metric("Packets analyzed", f"{total_packets:,}")
-        k5.metric("Traffic volume", f"{total_bytes:,} bytes")
-        k6.metric("Average bytes / flow", f"{total_bytes / total_flows:,.0f}" if total_flows else "0")
-
-        st.subheader("Detection summary")
-        if total_flows:
-            st.bar_chart(pd.DataFrame({"Flows": [safe_or_other, suspicious]}, index=["Safe / other", "Suspicious"]), color="#5da8f5")
+        # Attach model labels and confidence to extracted flows in their original row order.
+        if not flows.empty and not findings.empty:
+            flows = flows.reset_index(drop=True)
+            findings = findings.reset_index(drop=True)
+            flows["prediction"] = findings["ML prediction"].astype(str)
+            flows["confidence"] = pd.to_numeric(findings.get("Confidence", 0), errors="coerce")
+            flows["confidence"] = flows["confidence"].fillna(0).clip(0, 1)
+            suspicious_mask = flows["prediction"].str.lower().str.contains(
+                "attack|malicious|intrusion|botnet|suspicious|anomaly|scan", regex=True
+            )
+            # Confidence is the model's confidence in its predicted class. Convert it to
+            # a display score where suspicious predictions are high and other predictions low.
+            flows["threat_score"] = flows["confidence"].where(suspicious_mask, 1 - flows["confidence"])
         else:
-            st.info("No flows were extracted from this capture.")
+            suspicious_mask = pd.Series(False, index=flows.index)
+            flows["threat_score"] = 0.0
 
+        threshold = 0.5
+        suspicious_count = int(suspicious_mask.sum()) if len(flows) else 0
+        safe_count = max(len(flows) - suspicious_count, 0)
+
+        st.caption(f"Capture: {st.session_state.pcap_filename} · {st.session_state.packet_count:,} packets · {len(flows):,} flows")
+
+        # Top row: per-flow risk and safe/suspicious share.
         left, right = st.columns(2)
         with left:
-            st.subheader("Packets by protocol")
-            counts = st.session_state.protocol_counts
-            if counts:
-                st.bar_chart(pd.DataFrame({"Packets": counts}), color="#9cc9ff")
-            else:
-                st.info("No protocol counts available.")
-        with right:
-            st.subheader("Largest flows by traffic volume")
+            st.subheader("Per-flow threat score")
             if not flows.empty:
-                volume = flows.assign(total_bytes=flows["sbytes"] + flows["dbytes"]).nlargest(10, "total_bytes")
-                volume["Flow"] = volume.apply(lambda r: f'{r["src_ip"]}:{r["src_port"]} → {r["dst_ip"]}:{r["dst_port"]}', axis=1)
-                st.bar_chart(volume.set_index("Flow")[["total_bytes"]], color="#5da8f5")
+                scores = flows["threat_score"].astype(float).tolist()
+                fig = go.Figure()
+                for i, score in enumerate(scores, start=1):
+                    fig.add_trace(go.Bar(
+                        x=[i], y=[score], name="Flow score",
+                        marker_color=blue if score < threshold else pale,
+                        showlegend=False,
+                        hovertemplate=f"Flow {i}<br>Threat score: %{{y:.3f}}<extra></extra>"
+                    ))
+                fig.add_hline(y=threshold, line_dash="dash", line_color=pale,
+                              annotation_text="Risk threshold", annotation_position="top left")
+                fig.update_layout(
+                    height=350, paper_bgcolor=navy, plot_bgcolor=navy,
+                    font=dict(color=pale, size=15),
+                    xaxis_title="Flow", yaxis_title="Threat score (0–1)",
+                    yaxis=dict(range=[0, 1], gridcolor=line),
+                    xaxis=dict(gridcolor=line), margin=dict(l=45, r=20, t=25, b=45),
+                    hovermode="closest"
+                )
+                st.plotly_chart(fig, use_container_width=True, config=chart_config)
             else:
-                st.info("No flow volume data available.")
+                st.info("No flow scores available.")
+        with right:
+            st.subheader("Traffic breakdown")
+            fig = go.Figure(go.Pie(
+                labels=["Safe / other", "Suspicious"], values=[safe_count, suspicious_count],
+                hole=.58, marker=dict(colors=[blue, pale], line=dict(color=navy, width=2)),
+                textinfo="percent", hovertemplate="%{label}: %{value} flows (%{percent})<extra></extra>"
+            ))
+            fig.update_layout(height=350, paper_bgcolor=navy, font=dict(color=pale, size=15),
+                              legend=dict(orientation="h", y=-.08), margin=dict(l=10,r=10,t=15,b=35),
+                              annotations=[dict(text=f"{len(flows)}<br>Flows", x=.5, y=.5, showarrow=False,
+                                                 font=dict(size=24, color=pale))])
+            st.plotly_chart(fig, use_container_width=True, config=chart_config)
 
-        if not findings.empty and "ML prediction" in findings:
-            st.subheader("Model prediction breakdown")
-            st.bar_chart(findings["ML prediction"].astype(str).value_counts().to_frame("Flows"), color="#9cc9ff")
-            st.caption("Model classifications are not confirmed incidents. Validate suspicious flows against packet context and organizational baselines.")
+        # Second row: protocol and service distribution.
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Protocol distribution")
+            proto_counts = flows["proto"].astype(str).str.upper().value_counts() if not flows.empty else pd.Series(dtype=int)
+            fig = go.Figure(go.Bar(x=proto_counts.index.tolist(), y=proto_counts.values.tolist(),
+                                   marker_color=blue, hovertemplate="%{x}: %{y} flows<extra></extra>"))
+            fig.update_layout(height=320, paper_bgcolor=navy, plot_bgcolor=navy,
+                              font=dict(color=pale, size=15), xaxis_title="Protocol", yaxis_title="Flows",
+                              xaxis=dict(gridcolor=line), yaxis=dict(gridcolor=line),
+                              margin=dict(l=45,r=15,t=15,b=45))
+            st.plotly_chart(fig, use_container_width=True, config=chart_config)
+        with right:
+            st.subheader("Top services contacted")
+            if not flows.empty:
+                service_series = flows["service"].fillna("-").astype(str).replace({"": "-"})
+                service_counts = service_series.value_counts().head(8)
+            else:
+                service_counts = pd.Series(dtype=int)
+            fig = go.Figure(go.Bar(x=service_counts.values.tolist(), y=service_counts.index.tolist(),
+                                   orientation="h", marker_color=pale,
+                                   hovertemplate="%{y}: %{x} flows<extra></extra>"))
+            fig.update_layout(height=320, paper_bgcolor=navy, plot_bgcolor=navy,
+                              font=dict(color=pale, size=15), xaxis_title="Flows", yaxis_title="Service",
+                              xaxis=dict(gridcolor=line), yaxis=dict(gridcolor=line, autorange="reversed"),
+                              margin=dict(l=55,r=15,t=15,b=45))
+            st.plotly_chart(fig, use_container_width=True, config=chart_config)
+
+        # Lower charts: score distribution and sent/received volume per flow.
+        st.subheader("Threat score distribution — how risky are the connections?")
+        st.caption("Each bar counts flows within a threat-score range. The dashed line marks the configured risk boundary.")
+        if not flows.empty:
+            fig = go.Figure(go.Histogram(
+                x=flows["threat_score"], xbins=dict(start=0, end=1, size=.1),
+                marker_color=blue, hovertemplate="Score range: %{x}<br>Flows: %{y}<extra></extra>"
+            ))
+            fig.add_vline(x=threshold, line_dash="dash", line_color=pale,
+                          annotation_text="Risk boundary", annotation_position="top")
+            fig.update_layout(height=330, paper_bgcolor=navy, plot_bgcolor=navy,
+                              font=dict(color=pale, size=15), xaxis_title="Threat score (0 = lower risk, 1 = higher risk)",
+                              yaxis_title="Number of flows", xaxis=dict(range=[0,1], gridcolor=line),
+                              yaxis=dict(gridcolor=line), margin=dict(l=55,r=20,t=25,b=55))
+            st.plotly_chart(fig, use_container_width=True, config=chart_config)
+
+        st.subheader("Data volume per connection")
+        st.caption("Shows bytes sent and received per flow; a large transfer is a triage clue, not proof of data theft.")
+        if not flows.empty:
+            volume = flows.head(30).copy()
+            volume["flow_number"] = range(1, len(volume) + 1)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=volume["flow_number"], y=volume["sbytes"], mode="lines+markers",
+                                     name="Sent (bytes)", line=dict(color=blue, width=3),
+                                     hovertemplate="Flow %{x}<br>Sent: %{y:,} bytes<extra></extra>"))
+            fig.add_trace(go.Scatter(x=volume["flow_number"], y=volume["dbytes"], mode="lines+markers",
+                                     name="Received (bytes)", line=dict(color=pale, width=3),
+                                     hovertemplate="Flow %{x}<br>Received: %{y:,} bytes<extra></extra>"))
+            fig.update_layout(height=360, paper_bgcolor=navy, plot_bgcolor=navy,
+                              font=dict(color=pale, size=15), xaxis_title="Flow number", yaxis_title="Bytes",
+                              xaxis=dict(gridcolor=line), yaxis=dict(gridcolor=line),
+                              legend=dict(orientation="h", y=1.12), margin=dict(l=55,r=20,t=30,b=50))
+            st.plotly_chart(fig, use_container_width=True, config=chart_config)
+
+        st.caption("Threat score is derived from the model's predicted-class confidence and label. It is a visualization aid, not a calibrated probability of compromise.")
 
 
 # View PCAP File

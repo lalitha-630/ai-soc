@@ -15,84 +15,45 @@ st.set_page_config(page_title="AI-SOC Threat Analyzer", page_icon="🛡️", lay
 
 st.markdown("""
 <style>
-/* Dark navy canvas with white, larger text */
-.stApp { background:#081426; color:#ffffff; font-size:21px; }
-[data-testid="stSidebar"] { background:#101f35; border-right:1px solid #2b4566; }
-[data-testid="stSidebar"] * { color:#ffffff; }
-h1 { color:#ffffff; font-size:2.55rem !important; }
-h2 { color:#ffffff; font-size:2rem !important; font-style:italic; }
-h3 { color:#ffffff; font-size:1.6rem !important; font-style:italic; }
-p, label, [data-testid="stMarkdownContainer"] { color:#ffffff; font-size:21px; }
-small, [data-testid="stCaptionContainer"] { color:#d5e3f5 !important; font-size:16px !important; }
-
-/* Space between sections */
-[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlockBorderWrapper"] {
-    margin-bottom:20px;
-}
-
-/* Sidebar branding and navigation */
-[data-testid="stSidebar"] { min-width:280px; width:280px; }
-[data-testid="stSidebar"] > div:first-child { padding:1.5rem 1rem; }
-[data-testid="stSidebar"] h1 { font-size:2.35rem !important; line-height:1.2; }
+:root { --navy:#07172b; --panel:#102744; --panel2:#163554; --blue:#9cc9ff; --blue2:#5da8f5; --line:#315578; --text:#eaf4ff; }
+.stApp { background:var(--navy); color:var(--text); font-size:20px; }
+[data-testid="stHeader"] { background:rgba(7,23,43,.96); }
+[data-testid="stSidebar"] { background:#0b2039; border-right:1px solid var(--line); min-width:290px; width:290px; }
+[data-testid="stSidebar"] > div:first-child { padding:1.4rem 1rem; }
+[data-testid="stSidebar"] * { color:var(--text); }
+h1 { color:var(--blue) !important; font-size:2.7rem !important; line-height:1.15; }
+h2 { color:var(--blue) !important; font-size:2.15rem !important; }
+h3 { color:var(--blue) !important; font-size:1.65rem !important; }
+p, label, [data-testid="stMarkdownContainer"] { color:var(--text); font-size:20px; }
+small, [data-testid="stCaptionContainer"] { color:#b9d7f6 !important; font-size:17px !important; }
 [data-testid="stSidebar"] .stButton > button {
-    width:100%; min-height:62px; text-align:left; font-size:23px;
-    font-weight:700; border-radius:10px; padding:13px 16px;
-    background:#1b3555; color:#ffffff; border:1px solid #45678e;
+ width:100%; min-height:62px; text-align:left; font-size:22px; font-weight:700;
+ border-radius:12px; padding:13px 16px; background:var(--panel); color:var(--blue);
+ border:1px solid var(--line); transition:all .18s ease;
 }
-[data-testid="stSidebar"] .stButton > button:hover {
-    background:#24517d; border-color:#67e8f9; color:#ffffff;
+[data-testid="stSidebar"] .stButton > button:hover,
+[data-testid="stSidebar"] .stButton > button:focus,
+[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+ background:var(--blue2); color:var(--navy); border-color:var(--blue);
 }
-
-/* Buttons */
 .stButton > button, .stDownloadButton > button {
-    min-height:50px; font-size:21px; font-weight:700;
-    background:linear-gradient(100deg,#087eaa,#2456a6,#5b35a6);
-    color:#ffffff; border:1px solid #4776b5; border-radius:10px;
+ min-height:54px; font-size:20px; font-weight:700; background:var(--panel2);
+ color:var(--blue); border:1px solid var(--blue2); border-radius:11px; transition:all .18s ease;
 }
-.stButton > button:hover, .stDownloadButton > button:hover {
-    color:#ffffff; border:1px solid #67e8f9;
-}
-
-/* Metrics */
-[data-testid="stMetric"] {
-    background:#142640; border:1px solid #2b4566;
-    padding:20px; border-radius:12px; margin-bottom:20px;
-}
-[data-testid="stMetricLabel"] { color:#e2edfc !important; font-size:19px !important; }
-[data-testid="stMetricValue"] { color:#ffffff !important; font-size:38px !important; }
-
-/* Replace white input/file-upload surfaces with navy; keep text white */
-[data-testid="stFileUploader"] section,
-[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {
-    background:#142640 !important; color:#ffffff !important;
-    border:1px solid #385779 !important; border-radius:10px;
-}
-[data-testid="stFileUploader"] section *,
-[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] * {
-    color:#ffffff !important; font-size:18px !important;
-}
-.stTextInput input, .stTextArea textarea,
-.stSelectbox [data-baseweb="select"],
-.stNumberInput input, .stDateInput input {
-    background:#142640 !important; color:#ffffff !important;
-    font-size:20px !important; border:1px solid #385779 !important;
-    border-radius:8px;
-}
-.stTextInput label, .stTextArea label, .stSelectbox label {
-    color:#ffffff !important; font-size:19px !important;
-}
-
-/* Tables, expanders, and alerts */
-[data-testid="stDataFrame"] {
-    border:1px solid #2b4566; border-radius:8px;
-    color:#ffffff;
-}
-[data-testid="stExpander"] {
-    background:#142640; border:1px solid #2b4566;
-    border-radius:9px; margin-bottom:20px;
-}
-[data-testid="stExpander"] summary { color:#ffffff; font-size:20px; font-weight:700; }
+.stButton > button:hover, .stDownloadButton > button:hover { background:var(--blue); color:var(--navy); border-color:var(--blue); }
+[data-testid="stMetric"] { background:linear-gradient(145deg,#102744,#163554); border:1px solid var(--line); padding:22px; border-radius:14px; min-height:132px; }
+[data-testid="stMetricLabel"] { color:#b9d7f6 !important; font-size:19px !important; }
+[data-testid="stMetricValue"] { color:var(--blue) !important; font-size:42px !important; }
+[data-testid="stFileUploader"] section, [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] { background:var(--panel) !important; color:var(--text) !important; border:1px solid var(--line) !important; border-radius:12px; }
+[data-testid="stFileUploader"] section * { color:var(--text) !important; font-size:18px !important; }
+.stTextInput input, .stTextArea textarea, .stSelectbox [data-baseweb="select"], .stNumberInput input, .stDateInput input { background:var(--panel) !important; color:var(--text) !important; font-size:19px !important; border:1px solid var(--line) !important; border-radius:9px; }
+.stTextInput label, .stTextArea label, .stSelectbox label { color:var(--blue) !important; font-size:19px !important; }
+[data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:10px; }
+[data-testid="stExpander"] { background:var(--panel); border:1px solid var(--line); border-radius:11px; margin-bottom:18px; }
+[data-testid="stExpander"] summary { color:var(--blue); font-size:20px; font-weight:700; }
 [data-testid="stAlert"] { font-size:19px; }
+[data-testid="stPlotlyChart"] { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:10px; }
+hr { border-color:var(--line); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -421,25 +382,61 @@ elif st.session_state.page == "AI Analyst":
 
 # Statistics
 elif st.session_state.page == "Statistics":
-    st.title("Statistics")
+    st.title("Traffic & Threat Statistics")
     if not st.session_state.pcap_analyzed:
         st.info("Analyze a PCAP from Dashboard first.")
     else:
         flows = pd.DataFrame(st.session_state.flow_rows)
-        a, b, c = st.columns(3)
-        a.metric("Packets", st.session_state.packet_count)
-        b.metric("Flows", len(flows))
-        c.metric("Total bytes", int(flows["sbytes"].sum() + flows["dbytes"].sum()) if not flows.empty else 0)
-        counts = st.session_state.protocol_counts
-        if counts:
-            st.subheader("Protocol distribution")
-            st.bar_chart(pd.DataFrame(list(counts.items()), columns=["Protocol", "Packets"]).set_index("Protocol"))
-        if not flows.empty:
-            st.subheader("Packets per flow")
-            packet_totals = (flows["spkts"] + flows["dpkts"]).head(20)
-            st.bar_chart(packet_totals)
-            st.subheader("Bytes per flow")
-            st.bar_chart(flows[["sbytes", "dbytes"]].head(20))
+        findings = st.session_state.predictions
+        findings = findings.copy() if findings is not None else pd.DataFrame()
+        total_flows = len(flows)
+        total_packets = int(st.session_state.packet_count)
+        total_bytes = int(flows["sbytes"].sum() + flows["dbytes"].sum()) if not flows.empty else 0
+        suspicious = 0
+        if not findings.empty and "ML prediction" in findings:
+            labels = findings["ML prediction"].astype(str).str.lower()
+            suspicious = int(labels.str.contains("attack|malicious|intrusion|botnet|suspicious|anomaly|scan", regex=True).sum())
+        safe_or_other = max(total_flows - suspicious, 0)
+        suspicious_pct = 100 * suspicious / total_flows if total_flows else 0
+        high = int(findings["ML prediction"].apply(lambda x: severity(x) == "High").sum()) if not findings.empty and "ML prediction" in findings else 0
+
+        st.caption(f"Capture: {st.session_state.pcap_filename} · {total_packets:,} packets processed")
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Total flows", f"{total_flows:,}")
+        k2.metric("Suspicious flows", f"{suspicious:,}", f"{suspicious_pct:.1f}% of flows")
+        k3.metric("High-severity findings", f"{high:,}")
+        k4, k5, k6 = st.columns(3)
+        k4.metric("Packets analyzed", f"{total_packets:,}")
+        k5.metric("Traffic volume", f"{total_bytes:,} bytes")
+        k6.metric("Average bytes / flow", f"{total_bytes / total_flows:,.0f}" if total_flows else "0")
+
+        st.subheader("Detection summary")
+        if total_flows:
+            st.bar_chart(pd.DataFrame({"Flows": [safe_or_other, suspicious]}, index=["Safe / other", "Suspicious"]), color="#5da8f5")
+        else:
+            st.info("No flows were extracted from this capture.")
+
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Packets by protocol")
+            counts = st.session_state.protocol_counts
+            if counts:
+                st.bar_chart(pd.DataFrame({"Packets": counts}), color="#9cc9ff")
+            else:
+                st.info("No protocol counts available.")
+        with right:
+            st.subheader("Largest flows by traffic volume")
+            if not flows.empty:
+                volume = flows.assign(total_bytes=flows["sbytes"] + flows["dbytes"]).nlargest(10, "total_bytes")
+                volume["Flow"] = volume.apply(lambda r: f'{r["src_ip"]}:{r["src_port"]} → {r["dst_ip"]}:{r["dst_port"]}', axis=1)
+                st.bar_chart(volume.set_index("Flow")[["total_bytes"]], color="#5da8f5")
+            else:
+                st.info("No flow volume data available.")
+
+        if not findings.empty and "ML prediction" in findings:
+            st.subheader("Model prediction breakdown")
+            st.bar_chart(findings["ML prediction"].astype(str).value_counts().to_frame("Flows"), color="#9cc9ff")
+            st.caption("Model classifications are not confirmed incidents. Validate suspicious flows against packet context and organizational baselines.")
 
 
 # View PCAP File
